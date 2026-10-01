@@ -1,6 +1,9 @@
 import datetime
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
+
 from kubernetes import client, config
+from kubernetes.utils import parse_quantity
 from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.k8s import (
@@ -34,14 +37,33 @@ class KubernetesClientService:
                 kubeconfig = settings.KUBECONFIG_PATH if settings.KUBECONFIG_PATH else None
                 config.load_kube_config(config_file=kubeconfig)
                 logger.info("Loaded local kubeconfig")
+                self._apply_api_host_override()
 
             self.core_v1 = client.CoreV1Api()
             self.apps_v1 = client.AppsV1Api()
             self.version_api = client.VersionApi()
             self.is_connected = True
         except Exception as exc:
-            logger.warning(f"Could not connect to live Kubernetes cluster: {exc}. Operating in simulated/fallback mode.")
+            logger.warning(f"Could not connect to live Kubernetes cluster: {exc}. Dashboard will show simulated demo data; AI analysis is disabled until a cluster is reachable.")
             self.is_connected = False
+
+    def _apply_api_host_override(self):
+        """
+        Inside Docker, a kubeconfig pointing at 127.0.0.1/localhost refers to the container itself.
+        Rewrite the host (e.g. to host.docker.internal) while still verifying TLS against 'localhost',
+        which local clusters (Docker Desktop, kind, minikube) include in their certificate SANs.
+        """
+        override = settings.K8S_API_HOST_OVERRIDE
+        if not override:
+            return
+        cfg = client.Configuration.get_default_copy()
+        parsed = urlparse(cfg.host)
+        if parsed.hostname not in ("127.0.0.1", "localhost"):
+            return
+        cfg.host = parsed._replace(netloc=f"{override}:{parsed.port}" if parsed.port else override).geturl()
+        cfg.tls_server_name = "localhost"
+        client.Configuration.set_default(cfg)
+        logger.info(f"Kubernetes API host rewritten to {cfg.host}")
 
     def is_healthy(self) -> bool:
         if not self.is_connected or not self.core_v1:
@@ -65,13 +87,24 @@ class KubernetesClientService:
                     1 for n in nodes if any(c.type == "Ready" and c.status == "True" for c in n.status.conditions)
                 )
                 running_pods = sum(1 for p in pods if p.status.phase == "Running")
-                failed_pods = sum(1 for p in pods if p.status.phase in ["Failed", "CrashLoopBackOff"])
+                failed_pods = sum(1 for p in pods if self._is_pod_unhealthy(p))
+                restart_total = sum(
+                    cs.restart_count for p in pods for cs in (p.status.container_statuses or [])
+                )
 
-                # CPU calculation
-                total_cpu = 0.0
-                for n in nodes:
-                    cpu_str = n.status.capacity.get("cpu", "1")
-                    total_cpu += float(cpu_str)
+                # Capacity from nodes; usage approximated by resource requests (metrics-server is optional)
+                total_cpu = sum(float(parse_quantity(n.status.allocatable.get("cpu", "0"))) for n in nodes)
+                total_mem = sum(float(parse_quantity(n.status.allocatable.get("memory", "0"))) for n in nodes)
+                used_cpu = 0.0
+                used_mem = 0.0
+                for p in pods:
+                    if p.status.phase not in ("Running", "Pending"):
+                        continue
+                    for c in p.spec.containers:
+                        requests = (c.resources.requests or {}) if c.resources else {}
+                        used_cpu += float(parse_quantity(requests.get("cpu", "0")))
+                        used_mem += float(parse_quantity(requests.get("memory", "0")))
+                gib = 1024 ** 3
 
                 version = "v1.30.2"
                 if self.version_api:
@@ -82,7 +115,7 @@ class KubernetesClientService:
                         pass
 
                 return ClusterOverview(
-                    cluster_name="kind-local" if not settings.K8S_IN_CLUSTER else "in-cluster",
+                    cluster_name=self._cluster_name(),
                     server_version=version,
                     status="Healthy" if ready_nodes == len(nodes) and failed_pods == 0 else "Degraded",
                     node_count=len(nodes),
@@ -93,16 +126,17 @@ class KubernetesClientService:
                     deployment_count=len(deployments),
                     service_count=len(services),
                     namespace_count=len(namespaces),
-                    cpu_cores_total=total_cpu or 8.0,
-                    cpu_cores_used=round((total_cpu or 8.0) * 0.42, 2),
-                    cpu_percent=42.0,
-                    memory_bytes_total=16.0,
-                    memory_bytes_used=8.8,
-                    memory_percent=55.0,
-                    restart_count_24h=3,
+                    cpu_cores_total=round(total_cpu, 2),
+                    cpu_cores_used=round(used_cpu, 2),
+                    cpu_percent=round(100 * used_cpu / total_cpu, 1) if total_cpu else 0.0,
+                    memory_bytes_total=round(total_mem / gib, 2),
+                    memory_bytes_used=round(used_mem / gib, 2),
+                    memory_percent=round(100 * used_mem / total_mem, 1) if total_mem else 0.0,
+                    restart_count_24h=restart_total,
                 )
             except Exception as e:
                 logger.warning(f"Error fetching live cluster overview: {e}")
+                raise
 
         # Realistic default cluster overview
         return ClusterOverview(
@@ -125,6 +159,31 @@ class KubernetesClientService:
             memory_percent=55.0,
             restart_count_24h=2,
         )
+
+    UNHEALTHY_WAITING_REASONS = {
+        "CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError",
+        "CreateContainerError", "InvalidImageName", "RunContainerError",
+    }
+
+    def _is_pod_unhealthy(self, pod) -> bool:
+        if pod.status.phase in ("Failed", "Unknown"):
+            return True
+        for cs in pod.status.container_statuses or []:
+            waiting = cs.state.waiting if cs.state else None
+            if waiting and waiting.reason in self.UNHEALTHY_WAITING_REASONS:
+                return True
+        return False
+
+    def _cluster_name(self) -> str:
+        if settings.K8S_IN_CLUSTER:
+            return "in-cluster"
+        try:
+            _, active = config.list_kube_config_contexts(
+                config_file=settings.KUBECONFIG_PATH or None
+            )
+            return active["context"].get("cluster") or active["name"]
+        except Exception:
+            return "local-cluster"
 
     def get_nodes(self) -> List[NodeInfo]:
         if self.is_connected and self.core_v1:
@@ -169,6 +228,7 @@ class KubernetesClientService:
                 return res
             except Exception as exc:
                 logger.warning(f"Error fetching live nodes: {exc}")
+                raise
 
         # Simulated rich Node Data
         return [
@@ -294,6 +354,7 @@ class KubernetesClientService:
                 return res
             except Exception as exc:
                 logger.warning(f"Error fetching live pods: {exc}")
+                raise
 
         # Simulated pods
         return [
@@ -441,6 +502,7 @@ class KubernetesClientService:
                 return res
             except Exception as exc:
                 logger.warning(f"Error fetching live deployments: {exc}")
+                raise
 
         # Simulated deployments
         return [
@@ -544,6 +606,7 @@ class KubernetesClientService:
                 return res
             except Exception as exc:
                 logger.warning(f"Error fetching live services: {exc}")
+                raise
 
         # Simulated services
         return [
@@ -610,6 +673,7 @@ class KubernetesClientService:
                 return res
             except Exception as exc:
                 logger.warning(f"Error fetching live namespaces: {exc}")
+                raise
 
         return [
             NamespaceInfo(name="default", status="Active", pod_count=5, service_count=3, created_at="2026-09-16T10:00:00Z"),
@@ -642,6 +706,7 @@ class KubernetesClientService:
                 return res
             except Exception as exc:
                 logger.warning(f"Error fetching live events: {exc}")
+                raise
 
         # Simulated events
         return [
@@ -707,6 +772,7 @@ class KubernetesClientService:
                 )
             except Exception as exc:
                 logger.warning(f"Error fetching live pod logs: {exc}")
+                raise
 
         # Simulated logs for test/demo
         sample_logs = [

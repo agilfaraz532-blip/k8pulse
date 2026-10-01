@@ -117,7 +117,7 @@ export async function resolveAlertEvent(eventId: number): Promise<AlertEvent> {
   }));
 }
 
-// Google Gemini AI Copilot
+// AI Copilot (local Ollama, Gemini fallback)
 export async function explainClusterHealth(customQuestion?: string): Promise<AIAnalysisResponse> {
   return handleResponse<AIAnalysisResponse>(await fetch(`${API_BASE}/ai/explain-cluster`, {
     method: 'POST',
@@ -132,4 +132,52 @@ export async function analyzeIncident(namespace: string, podName: string, contai
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ namespace, pod_name: podName, container_name: containerName }),
   }));
+}
+
+export type AIStreamEvent =
+  | ({ type: 'meta'; engine: string } & Omit<AIAnalysisResponse, 'root_cause_analysis' | 'model_used'>)
+  | { type: 'token'; text: string }
+  | { type: 'done'; model_used: string; suggested_commands: string[]; notice?: string }
+  | { type: 'error'; message: string };
+
+export type AIStreamTarget =
+  | { kind: 'cluster'; question?: string }
+  | { kind: 'incident'; namespace: string; podName: string; containerName?: string };
+
+/** Streams an AI analysis as NDJSON events so text appears while the model is still generating. */
+export async function streamAIAnalysis(
+  target: AIStreamTarget,
+  onEvent: (event: AIStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const [path, body] =
+    target.kind === 'cluster'
+      ? ['explain-cluster', { custom_question: target.question || undefined }]
+      : ['analyze-incident', { namespace: target.namespace, pod_name: target.podName, container_name: target.containerName }];
+
+  const res = await fetch(`${API_BASE}/ai/${path}/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    await handleResponse(res);
+    throw new Error('AI stream returned no body');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (line.trim()) onEvent(JSON.parse(line) as AIStreamEvent);
+    }
+  }
+  if (buffer.trim()) onEvent(JSON.parse(buffer) as AIStreamEvent);
 }

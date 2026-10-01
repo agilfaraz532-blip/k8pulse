@@ -55,11 +55,12 @@ import { PodsTab } from './components/PodsTab';
 import { DeploymentsTab } from './components/DeploymentsTab';
 import { LogsTab } from './components/LogsTab';
 import { AlertsTab } from './components/AlertsTab';
-import { AITab } from './components/AITab';
+import { AITab, IncidentTarget } from './components/AITab';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'nodes' | 'pods' | 'deployments' | 'logs' | 'alerts' | 'ai'>('overview');
   const [logTarget, setLogTarget] = useState<{ namespace: string; podName: string } | null>(null);
+  const [incidentTarget, setIncidentTarget] = useState<IncidentTarget | null>(null);
 
   // State
   const [healthData, setHealthData] = useState<HealthResponse | null>(null);
@@ -153,7 +154,8 @@ export default function App() {
     setActiveTab('logs');
   };
 
-  const handleAnalyzeAI = (_namespace: string, _podName: string) => {
+  const handleAnalyzeAI = (namespace: string, podName: string) => {
+    setIncidentTarget({ namespace, podName });
     setActiveTab('ai');
   };
 
@@ -164,7 +166,7 @@ export default function App() {
     { id: 'deployments', label: 'Deployments & Services', icon: Layers, count: deployments.length ? String(deployments.length) : null },
     { id: 'logs', label: 'Terminal Log Viewer', icon: FileText, count: null },
     { id: 'alerts', label: 'Alert Center', icon: AlertTriangle, count: alertEvents.filter((e) => !e.is_resolved).length ? String(alertEvents.filter((e) => !e.is_resolved).length) : null },
-    { id: 'ai', label: 'Gemini SRE Copilot', icon: Bot, count: 'AI' },
+    { id: 'ai', label: 'AI SRE Copilot', icon: Bot, count: 'AI' },
   ];
 
   return (
@@ -343,7 +345,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'ai' && <AITab />}
+          {activeTab === 'ai' && <AITab incidentTarget={incidentTarget} onIncidentHandled={() => setIncidentTarget(null)} />}
         </div>
       </main>
     </div>

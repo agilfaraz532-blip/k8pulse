@@ -65,18 +65,26 @@ services:
       dockerfile: Dockerfile
     container_name: k8spulse-backend
     restart: unless-stopped
+    # Secrets such as GEMINI_API_KEY come from backend/.env (optional; never baked into the image)
+    env_file:
+      - path: ./backend/.env
+        required: false
+    # Values below override backend/.env with container-specific addresses
     environment:
       - ENVIRONMENT=production
       - LOG_LEVEL=INFO
       - DATABASE_URL=postgresql+asyncpg://postgres:postgrespassword@postgres:5432/k8spulse_db
       - PROMETHEUS_URL=http://prometheus:9090
       - K8S_IN_CLUSTER=false
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      # Host kubeconfig is mounted read-only; 127.0.0.1 API servers are reached via the host gateway
+      - KUBECONFIG_PATH=/root/.kube/config
+      - K8S_API_HOST_OVERRIDE=host.docker.internal
       # Ollama runs on the host machine, not inside the compose network
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:latest}
       - SECRET_KEY=${SECRET_KEY:-change-this-to-a-super-secret-hex-key-in-production}
+    volumes:
+      - ${KUBECONFIG_HOST_PATH:-~/.kube/config}:/root/.kube/config:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

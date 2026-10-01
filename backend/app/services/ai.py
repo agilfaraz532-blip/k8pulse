@@ -1,6 +1,8 @@
 import asyncio
 import datetime
-from typing import List, Optional, Tuple
+import json
+import re
+from typing import AsyncIterator, Dict, List, Tuple
 
 import httpx
 import google.generativeai as genai
@@ -9,6 +11,38 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.ai import AIAnalysisResponse, AIClusterAnalysisRequest, AIPodIncidentRequest
 from app.kubernetes.client import k8s_service
+
+
+class AIUnavailableError(Exception):
+    """Raised when a real AI analysis cannot be produced (no cluster data or no reachable model)."""
+
+
+def _now() -> str:
+    return datetime.datetime.utcnow().isoformat()
+
+
+# Local models on CPU read prompts slowly (a few tokens/s), so prompts are kept compact.
+_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s+")
+
+
+def _clip(text: str, limit: int = 160) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+_KUBECTL_RE =re.compile(r"(?:^|[`\s$>])(kubectl\s[^`\n]+)", re.MULTILINE)
+
+
+def extract_kubectl_commands(text: str, limit: int = 8) -> List[str]:
+    """Pull the kubectl commands the model itself suggested, in order, without duplicates."""
+    commands: List[str] = []
+    for match in _KUBECTL_RE.finditer(text):
+        cmd = match.group(1).strip().rstrip(".,;")
+        if cmd not in commands:
+            commands.append(cmd)
+        if len(commands) >= limit:
+            break
+    return commands
 
 
 class GeminiAIService:
@@ -27,23 +61,43 @@ class GeminiAIService:
             except Exception as e:
                 logger.warning(f"Failed to initialize Gemini API: {e}")
 
+    # ------------------------------------------------------------------ LLM backends
+
+    def _ollama_payload(self, prompt: str, stream: bool) -> Dict:
+        return {
+            "model": self.ollama_model,
+            "prompt": prompt,
+            "stream": stream,
+            "keep_alive": "30m",
+            "options": {"temperature": 0.2, "num_predict": settings.OLLAMA_NUM_PREDICT},
+        }
+
+    def _ollama_timeout(self) -> httpx.Timeout:
+        # Generous read timeout: CPU-only inference of a few hundred tokens can take minutes.
+        return httpx.Timeout(settings.OLLAMA_TIMEOUT, connect=5.0)
+
     async def _call_ollama(self, prompt: str) -> str:
         url = f"{self.ollama_base_url}/api/generate"
-        # Generous read timeout: CPU-only inference of a few hundred tokens can take minutes.
-        timeout = httpx.Timeout(settings.OLLAMA_TIMEOUT, connect=5.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                url,
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "keep_alive": "30m",
-                    "options": {"temperature": 0.2, "num_predict": settings.OLLAMA_NUM_PREDICT},
-                },
-            )
+        async with httpx.AsyncClient(timeout=self._ollama_timeout()) as client:
+            response = await client.post(url, json=self._ollama_payload(prompt, stream=False))
             response.raise_for_status()
             return response.json().get("response", "").strip()
+
+    async def _stream_ollama(self, prompt: str) -> AsyncIterator[str]:
+        url = f"{self.ollama_base_url}/api/generate"
+        async with httpx.AsyncClient(timeout=self._ollama_timeout()) as client:
+            async with client.stream("POST", url, json=self._ollama_payload(prompt, stream=True)) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    if chunk.get("error"):
+                        raise RuntimeError(chunk["error"])
+                    if chunk.get("response"):
+                        yield chunk["response"]
+                    if chunk.get("done"):
+                        break
 
     def _call_gemini(self, prompt: str) -> str:
         base_name = self.model_name.removeprefix("models/")
@@ -61,6 +115,15 @@ class GeminiAIService:
                 logger.warning(f"Gemini model {model_name} failed: {exc}")
         raise last_exc or RuntimeError("Gemini generation failed")
 
+    def _unavailable_message(self, ollama_error: str) -> str:
+        msg = (
+            f"Could not get a response from Ollama at {self.ollama_base_url} ({ollama_error}). "
+            f"Make sure Ollama is running (`ollama serve`) and the model is pulled (`ollama pull {self.ollama_model}`)."
+        )
+        if not self._is_configured:
+            msg += " No GEMINI_API_KEY is set, so there is no cloud fallback."
+        return msg
+
     async def _generate_with_fallback(self, prompt: str) -> Tuple[str, str]:
         """Returns (text, model_used). Tries local Ollama first, then Gemini."""
         try:
@@ -68,168 +131,227 @@ class GeminiAIService:
             if text:
                 logger.info(f"AI analysis generated by Ollama ({self.ollama_model})")
                 return text, f"ollama:{self.ollama_model}"
-            logger.warning("Ollama returned an empty response")
+            ollama_error = "empty response"
         except Exception as exc:
-            logger.warning(f"Ollama unavailable at {self.ollama_base_url} ({type(exc).__name__}: {exc}); trying Gemini")
+            ollama_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(f"Ollama unavailable at {self.ollama_base_url} ({ollama_error}); trying Gemini")
 
-        if not self._is_configured:
-            raise RuntimeError("No AI backend available (Ollama failed and GEMINI_API_KEY is not set)")
+        if self._is_configured:
+            try:
+                return await asyncio.to_thread(self._call_gemini, prompt), self.model_name
+            except Exception as exc:
+                logger.warning(f"Gemini fallback failed: {exc}")
+                raise AIUnavailableError(f"{self._unavailable_message(ollama_error)} Gemini also failed: {exc}")
+        raise AIUnavailableError(self._unavailable_message(ollama_error))
 
-        text = await asyncio.to_thread(self._call_gemini, prompt)
-        return text, self.model_name
+    # ------------------------------------------------------------------ Prompt builders (live data only)
 
-    async def explain_cluster_health(self, req: AIClusterAnalysisRequest) -> AIAnalysisResponse:
+    def _require_cluster(self):
+        if not k8s_service.is_connected:
+            raise AIUnavailableError(
+                "Not connected to a Kubernetes cluster, so there is no real data to analyze. "
+                "Check KUBECONFIG_PATH / the mounted kubeconfig and restart the backend."
+            )
+
+    def _cluster_context(self, req: AIClusterAnalysisRequest) -> Tuple[str, AIAnalysisResponse]:
+        """Returns (prompt, response metadata built from live cluster data)."""
+        self._require_cluster()
         overview = k8s_service.get_cluster_overview()
-        events = k8s_service.get_events()
-        warning_events = [e for e in events if e.event_type == "Warning"]
+        warning_events = [e for e in k8s_service.get_events() if e.event_type == "Warning"]
+        unhealthy_pods = [p for p in k8s_service.get_pods() if p.status != "Running" and p.status != "Succeeded"]
+        restarting_pods = sorted((p for p in k8s_service.get_pods() if p.restarts > 0), key=lambda p: -p.restarts)
+
+        def pod_line(p) -> str:
+            reasons = ", ".join(f"{c.name}:{c.state}{'/' + c.reason if c.reason else ''}" for c in p.containers)
+            return f"{p.namespace}/{p.name} status={p.status} ready={p.ready} restarts={p.restarts} [{reasons}]"
+
+        prompt = f"""
+You are a Principal Kubernetes Site Reliability Engineer (SRE).
+Analyze ONLY the live telemetry below. Do not invent pods, services, errors or numbers that are not listed.
+If everything is healthy, say so plainly.
+
+Cluster: {overview.cluster_name} (Kubernetes {overview.server_version}), status {overview.status}
+Nodes: {overview.ready_nodes}/{overview.node_count} Ready
+Pods: {overview.running_pods}/{overview.pod_count} Running, {overview.failed_pods} unhealthy
+Deployments: {overview.deployment_count}, Services: {overview.service_count}, Namespaces: {overview.namespace_count}
+CPU requested: {overview.cpu_cores_used}/{overview.cpu_cores_total} cores ({overview.cpu_percent}%)
+Memory requested: {overview.memory_bytes_used}/{overview.memory_bytes_total} GiB ({overview.memory_percent}%)
+(CPU/memory are resource requests vs allocatable, not live usage.)
+Total container restarts: {overview.restart_count_24h}
+
+Pods not Running ({len(unhealthy_pods)}):
+{chr(10).join(pod_line(p) for p in unhealthy_pods[:8]) or "none"}
+
+Pods with restarts (top 5):
+{chr(10).join(pod_line(p) for p in restarting_pods[:5]) or "none"}
+
+Recent Warning events ({len(warning_events)}):
+{chr(10).join(f"{e.namespace} {e.object_kind}/{e.object_name} {e.reason}: {_clip(e.message)} (x{e.count})" for e in warning_events[:6]) or "none"}
+
+Question: {req.custom_question or 'Provide an executive cluster health summary and operational recommendations.'}
+
+Answer in concise markdown (under 250 words) with sections: Findings, Recommendations, Commands.
+Put each kubectl command in backticks.
+"""
+
+        meta = AIAnalysisResponse(
+            title=f"Cluster Health Analysis for {overview.cluster_name}",
+            severity="Critical" if overview.ready_nodes < overview.node_count
+            else "Warning" if overview.failed_pods > 0 or warning_events else "Normal",
+            summary=(
+                f"{overview.ready_nodes}/{overview.node_count} nodes Ready, {overview.running_pods}/{overview.pod_count} pods Running, "
+                f"{overview.failed_pods} unhealthy, {len(warning_events)} warning events. "
+                f"CPU requested {overview.cpu_percent}%, memory requested {overview.memory_percent}%."
+            ),
+            root_cause_analysis="",
+            recommendations=[],
+            suggested_commands=[],
+            model_used="",
+            timestamp=_now(),
+        )
+        return prompt, meta
+
+    def _incident_context(self, req: AIPodIncidentRequest) -> Tuple[str, AIAnalysisResponse]:
+        self._require_cluster()
+        pod = next((p for p in k8s_service.get_pods(namespace=req.namespace) if p.name == req.pod_name), None)
+        if pod is None:
+            raise AIUnavailableError(f"Pod {req.namespace}/{req.pod_name} was not found in the cluster.")
 
         try:
-            prompt = f"""
-            You are a Principal Kubernetes Site Reliability Engineer (SRE).
-            Analyze the following Kubernetes cluster telemetry:
-            - Cluster: {overview.cluster_name} (Version: {overview.server_version})
-            - Node Count: {overview.node_count} ({overview.ready_nodes} Ready)
-            - Running Pods: {overview.running_pods}/{overview.pod_count}
-            - Failed/CrashLoop Pods: {overview.failed_pods}
-            - CPU Usage: {overview.cpu_percent}% ({overview.cpu_cores_used}/{overview.cpu_cores_total} cores)
-            - Memory Usage: {overview.memory_percent}% ({overview.memory_bytes_used}/{overview.memory_bytes_total} GB)
-            - Warning Events: {[e.model_dump() for e in warning_events[:5]]}
-            - User Question: {req.custom_question or 'Provide an executive cluster health summary and operational recommendations.'}
-
-            Provide a concise response in structured markdown with Root Cause, Recommendations, and kubectl commands.
-            Keep it under 300 words.
-            """
-            ai_text, model_used = await self._generate_with_fallback(prompt)
-
-            return AIAnalysisResponse(
-                title=f"Cluster Health Analysis for {overview.cluster_name}",
-                severity="Warning" if overview.failed_pods > 0 or overview.cpu_percent > 80 else "Normal",
-                summary=f"Cluster is currently operating at {overview.cpu_percent}% CPU and {overview.memory_percent}% Memory with {overview.running_pods}/{overview.pod_count} pods running.",
-                root_cause_analysis=ai_text,
-                recommendations=[
-                    "Inspect pods in CrashLoopBackOff status (e.g. auth-service).",
-                    "Review memory limits on workloads approaching threshold.",
-                    "Check node capacity distribution across worker nodes.",
-                ],
-                suggested_commands=[
-                    "kubectl get pods -A --field-selector status.phase!=Running",
-                    "kubectl top nodes",
-                    "kubectl get events --sort-by='.metadata.creationTimestamp'",
-                ],
-                model_used=model_used,
-                timestamp=datetime.datetime.utcnow().isoformat(),
-            )
+            logs = k8s_service.get_pod_logs(
+                namespace=req.namespace,
+                pod_name=req.pod_name,
+                container_name=req.container_name,
+                tail_lines=req.tail_lines,
+            ).logs[-15:]
+            logs_text = "\n".join(_clip(_TIMESTAMP_RE.sub("", line), 200) for line in logs) or "(no log output)"
         except Exception as exc:
-            logger.warning(f"Error invoking AI API: {exc}")
+            logs_text = f"(logs unavailable: {exc})"
 
-        # Intelligent Built-in Diagnostic Engine (Offline / Local fallback)
-        severity = "Warning" if overview.failed_pods > 0 else "Normal"
-        summary = (
-            f"Cluster '{overview.cluster_name}' is currently {overview.status.lower()}. "
-            f"All {overview.ready_nodes} nodes are Ready. {overview.running_pods} of {overview.pod_count} pods are running normally."
-        )
-
-        root_cause = (
-            "### AI Diagnostic Summary\n\n"
-            "1. **Pod Health**: 1 pod (`auth-service`) is currently reporting `CrashLoopBackOff` due to a downstream database connection timeout.\n"
-            "2. **Resource Pressure**: CPU load (43%) and Memory utilization (55%) are well within safe operating thresholds.\n"
-            "3. **Control Plane**: Kubelet and API server response latencies are nominal with zero dropped requests."
-        )
-
-        recommendations = [
-            "Inspect `auth-service` database credentials and verify Postgres service reachability on port 5432.",
-            "Verify network policy rules between default namespace and monitoring namespace.",
-            "Configure PodDisruptionBudgets (PDB) for critical production deployments.",
-        ]
-
-        commands = [
-            "kubectl describe pod auth-service-589cf-4kk2p -n default",
-            "kubectl logs -n default -l app=auth-service --tail=50",
-            "kubectl get svc -n default postgres-db-0",
-        ]
-
-        return AIAnalysisResponse(
-            title=f"Autonomous Cluster Health Assessment ({overview.cluster_name})",
-            severity=severity,
-            summary=summary,
-            root_cause_analysis=root_cause,
-            recommendations=recommendations,
-            suggested_commands=commands,
-            model_used="offline-rule-engine (no LLM reachable)",
-            timestamp=datetime.datetime.utcnow().isoformat(),
-        )
-
-    async def analyze_incident(self, req: AIPodIncidentRequest) -> AIAnalysisResponse:
-        logs_resp = k8s_service.get_pod_logs(
-            namespace=req.namespace,
-            pod_name=req.pod_name,
-            container_name=req.container_name,
-            tail_lines=req.tail_lines,
-        )
         events = k8s_service.get_events(namespace=req.namespace)
         relevant_events = [e for e in events if req.pod_name in e.object_name or req.pod_name in e.message]
+        containers = "\n".join(
+            f"- {c.name} image={c.image} ready={c.ready} state={c.state} reason={c.reason or '-'} restarts={c.restart_count}"
+            for c in pod.containers
+        ) or "- none reported"
+
+        prompt = f"""
+You are a senior Kubernetes Incident Response Engineer.
+Analyze pod '{req.pod_name}' in namespace '{req.namespace}' using ONLY the live data below.
+Do not invent errors that are not in the logs/events. If the pod looks healthy, say so plainly.
+
+Pod status: {pod.status}, ready {pod.ready}, restarts {pod.restarts}, node {pod.node_name}, age {pod.age}
+Containers:
+{containers}
+
+Recent logs:
+{logs_text}
+
+Events for this pod:
+{chr(10).join(f"{e.event_type} {e.reason}: {_clip(e.message)} (x{e.count})" for e in relevant_events[:6]) or "none"}
+
+Answer in concise markdown (under 250 words) with sections: Root Cause, Impact, Remediation, Commands.
+Put each kubectl command in backticks.
+"""
+
+        unhealthy = pod.status not in ("Running", "Succeeded") or any(c.reason for c in pod.containers if not c.ready)
+        meta = AIAnalysisResponse(
+            title=f"Incident Analysis: Pod {req.pod_name}",
+            severity="Critical" if unhealthy else "Warning" if pod.restarts > 0 else "Normal",
+            summary=(
+                f"Pod {req.namespace}/{req.pod_name} is {pod.status} ({pod.ready} ready) with {pod.restarts} restarts "
+                f"and {len(relevant_events)} related events."
+            ),
+            root_cause_analysis="",
+            recommendations=[],
+            suggested_commands=[],
+            model_used="",
+            timestamp=_now(),
+        )
+        return prompt, meta
+
+    # ------------------------------------------------------------------ Public API
+
+    async def _analyze(self, prompt: str, meta: AIAnalysisResponse) -> AIAnalysisResponse:
+        ai_text, model_used = await self._generate_with_fallback(prompt)
+        return meta.model_copy(update={
+            "root_cause_analysis": ai_text,
+            "suggested_commands": extract_kubectl_commands(ai_text),
+            "model_used": model_used,
+            "timestamp": _now(),
+        })
+
+    async def explain_cluster_health(self, req: AIClusterAnalysisRequest) -> AIAnalysisResponse:
+        return await self._analyze(*self._cluster_context(req))
+
+    async def analyze_incident(self, req: AIPodIncidentRequest) -> AIAnalysisResponse:
+        return await self._analyze(*self._incident_context(req))
+
+    async def stream_cluster_health(self, req: AIClusterAnalysisRequest) -> AsyncIterator[str]:
+        async for line in self._stream(lambda: self._cluster_context(req)):
+            yield line
+
+    async def stream_incident(self, req: AIPodIncidentRequest) -> AsyncIterator[str]:
+        async for line in self._stream(lambda: self._incident_context(req)):
+            yield line
+
+    async def _stream(self, build_context) -> AsyncIterator[str]:
+        """
+        NDJSON event stream:
+          {"type": "meta", ...analysis fields}
+          {"type": "token", "text": "..."}   (repeated)
+          {"type": "done", "model_used": "...", "suggested_commands": [...], "notice": "..."?}
+          {"type": "error", "message": "..."}  (instead of done, when no real answer is possible)
+        """
+        def event(payload: Dict) -> str:
+            return json.dumps(payload) + "\n"
 
         try:
-            prompt = f"""
-            You are a senior Kubernetes Incident Response Engineer.
-            Analyze the crash/failure of pod '{req.pod_name}' in namespace '{req.namespace}'.
-            Recent logs:
-            {logs_resp.logs[-30:]}
+            prompt, meta = await asyncio.to_thread(build_context)
+        except AIUnavailableError as exc:
+            yield event({"type": "error", "message": str(exc)})
+            return
+        except Exception as exc:
+            logger.warning(f"Failed to collect cluster data for AI analysis: {exc}")
+            yield event({"type": "error", "message": f"Failed to read cluster data: {exc}"})
+            return
 
-            Recent Events:
-            {[e.model_dump() for e in relevant_events]}
+        yield event({"type": "meta", "engine": f"ollama:{self.ollama_model}",
+                     **meta.model_dump(exclude={"root_cause_analysis", "model_used"})})
 
-            Explain:
-            1. Exact Root Cause (e.g. OOMKilled, Config Error, DB Connection, Liveness Probe Failure)
-            2. Impact Analysis
-            3. Concrete step-by-step remediation plan
-            4. Exact kubectl commands to verify and fix.
-            Be concise (under 300 words), use markdown.
-            """
-            ai_text, model_used = await self._generate_with_fallback(prompt)
-            return AIAnalysisResponse(
-                title=f"Incident Analysis: Pod {req.pod_name}",
-                severity="Critical",
-                summary=f"Pod {req.pod_name} is crashing. Analysis completed via {model_used}.",
-                root_cause_analysis=ai_text,
-                recommendations=[
-                    "Check environment variable DB_HOST in the deployment manifest.",
-                    "Verify PostgreSQL listener and credentials.",
-                ],
-                suggested_commands=[
-                    f"kubectl logs -n {req.namespace} {req.pod_name} --previous",
-                    f"kubectl describe pod -n {req.namespace} {req.pod_name}",
-                ],
-                model_used=model_used,
-                timestamp=datetime.datetime.utcnow().isoformat(),
-            )
-        except Exception as e:
-            logger.warning(f"Error during incident analysis via AI: {e}")
+        text = ""
+        try:
+            async for token in self._stream_ollama(prompt):
+                text += token
+                yield event({"type": "token", "text": token})
+            if text:
+                logger.info(f"AI analysis streamed by Ollama ({self.ollama_model})")
+                yield event({"type": "done", "model_used": f"ollama:{self.ollama_model}",
+                             "suggested_commands": extract_kubectl_commands(text)})
+                return
+            ollama_error = "empty response"
+        except Exception as exc:
+            logger.warning(f"Ollama streaming failed at {self.ollama_base_url} ({type(exc).__name__}: {exc})")
+            if text:
+                yield event({"type": "done", "model_used": f"ollama:{self.ollama_model}",
+                             "suggested_commands": extract_kubectl_commands(text),
+                             "notice": f"Ollama stopped mid-response: {exc}"})
+                return
+            ollama_error = f"{type(exc).__name__}: {exc}"
 
-        # Intelligent Built-in Incident Diagnosis Engine
-        return AIAnalysisResponse(
-            title=f"Pod Incident Root Cause Analysis: {req.pod_name}",
-            severity="Critical" if "auth" in req.pod_name else "Warning",
-            summary=f"Pod '{req.pod_name}' in namespace '{req.namespace}' experienced repeated container terminations (Exit Code 1).",
-            root_cause_analysis=(
-                "### Root Cause Identification\n\n"
-                "The container failed during initialization phase. Log analysis reveals:\n"
-                "`ERROR [auth-service] DBConnectionError: timeout connecting to auth_db on port 5432`\n\n"
-                "**Underlying Cause**: The service attempts to connect to `postgres-db-0.default.svc.cluster.local:5432` before the database container has finished running its readiness probe."
-            ),
-            recommendations=[
-                "Add an `initContainers` block with `nc -z -v -w3 postgres-db-0 5432` to wait for database readiness.",
-                "Increase container restart back-off or set `initialDelaySeconds: 15` on the liveness probe.",
-                "Verify that `DATABASE_URL` matches the cluster service DNS.",
-            ],
-            suggested_commands=[
-                f"kubectl logs -n {req.namespace} {req.pod_name} -c auth --previous",
-                f"kubectl get endpoints postgres-db-0 -n {req.namespace}",
-                f"kubectl rollout restart deployment/auth-service -n {req.namespace}",
-            ],
-            model_used="offline-rule-engine (no LLM reachable)",
-            timestamp=datetime.datetime.utcnow().isoformat(),
-        )
+        if self._is_configured:
+            try:
+                text = await asyncio.to_thread(self._call_gemini, prompt)
+                yield event({"type": "token", "text": text})
+                yield event({"type": "done", "model_used": self.model_name,
+                             "suggested_commands": extract_kubectl_commands(text),
+                             "notice": f"Ollama unavailable ({ollama_error}); answered by Gemini."})
+                return
+            except Exception as exc:
+                logger.warning(f"Gemini fallback failed: {exc}")
+                ollama_error += f"; Gemini also failed: {exc}"
+
+        yield event({"type": "error", "message": self._unavailable_message(ollama_error)})
 
 
 gemini_service = GeminiAIService()

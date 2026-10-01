@@ -420,7 +420,7 @@ export function OverviewTab({
                 <Bot className="w-5 h-5 text-purple-300" />
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-purple-200">Gemini Cluster Copilot</h3>
+                <h3 className="text-sm font-semibold text-purple-200">AI Cluster Copilot</h3>
                 <p className="text-[10px] text-purple-300/70 font-mono">Automated Incident Triage</p>
               </div>
             </div>

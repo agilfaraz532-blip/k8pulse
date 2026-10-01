@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     KUBECONFIG_PATH: str = ""
     K8S_IN_CLUSTER: bool = False
     K8S_REQUEST_TIMEOUT: int = 10
+    # Set to host.docker.internal when running in Docker against a cluster on the host's 127.0.0.1
+    K8S_API_HOST_OVERRIDE: str = ""
 
     # Prometheus
     PROMETHEUS_URL: str = "http://localhost:9090"

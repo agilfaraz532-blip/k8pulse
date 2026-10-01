@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Bot,
   Sparkles,
@@ -10,27 +10,93 @@ import {
   CheckCircle2,
   HelpCircle,
   Lightbulb,
+  Loader2,
+  XCircle,
+  Info,
 } from 'lucide-react';
 import { AIAnalysisResponse } from '../types';
-import { explainClusterHealth } from '../services/api';
+import { streamAIAnalysis, AIStreamTarget } from '../services/api';
 
-export function AITab() {
+export interface IncidentTarget {
+  namespace: string;
+  podName: string;
+}
+
+interface AITabProps {
+  incidentTarget?: IncidentTarget | null;
+  onIncidentHandled?: () => void;
+}
+
+export function AITab({ incidentTarget, onIncidentHandled }: AITabProps) {
   const [question, setQuestion] = useState('');
   const [analysis, setAnalysis] = useState<AIAnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const runAnalysis = async (customQ?: string) => {
+  // Abort any in-flight generation when leaving the tab
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (!loading) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [loading]);
+
+  const startStream = async (target: AIStreamTarget) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
+    setError(null);
+    setNotice(null);
+    setAnalysis(null);
     try {
-      const data = await explainClusterHealth(customQ || question);
-      setAnalysis(data);
+      await streamAIAnalysis(
+        target,
+        (event) => {
+          if (event.type === 'meta') {
+            const { type: _type, engine, ...meta } = event;
+            setAnalysis({ ...meta, root_cause_analysis: '', model_used: `${engine} (generating…)` });
+          } else if (event.type === 'token') {
+            setAnalysis((prev) => (prev ? { ...prev, root_cause_analysis: prev.root_cause_analysis + event.text } : prev));
+          } else if (event.type === 'done') {
+            setAnalysis((prev) =>
+              prev ? { ...prev, model_used: event.model_used, suggested_commands: event.suggested_commands } : prev,
+            );
+            if (event.notice) setNotice(event.notice);
+          } else if (event.type === 'error') {
+            setAnalysis(null);
+            setError(event.message);
+          }
+        },
+        controller.signal,
+      );
     } catch (err) {
-      console.error(err);
+      if ((err as Error).name !== 'AbortError') {
+        console.error(err);
+        setError((err as Error).message || 'AI analysis failed');
+      }
     } finally {
-      setLoading(false);
+      if (abortRef.current === controller) setLoading(false);
     }
   };
+
+  const runAnalysis = (customQ?: string) => startStream({ kind: 'cluster', question: customQ || question });
+
+  useEffect(() => {
+    if (!incidentTarget) return;
+    setQuestion('');
+    startStream({ kind: 'incident', namespace: incidentTarget.namespace, podName: incidentTarget.podName });
+    onIncidentHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentTarget]);
 
   const copyToClipboard = (cmd: string) => {
     navigator.clipboard.writeText(cmd);
@@ -56,7 +122,7 @@ export function AITab() {
             </div>
             <div>
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                Gemini Kubernetes SRE Copilot
+                Kubernetes SRE Copilot
               </h2>
               <p className="text-xs text-purple-300/80 font-mono">Autonomous Diagnostic & Root Cause Engine</p>
             </div>
@@ -109,7 +175,7 @@ export function AITab() {
         <div className="relative flex-1">
           <input
             type="text"
-            placeholder="Ask Gemini anything about your cluster, pods, or metrics..."
+            placeholder="Ask the AI copilot anything about your cluster, pods, or metrics..."
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             className="w-full pl-4 pr-10 py-3 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
@@ -123,6 +189,29 @@ export function AITab() {
           <Send className="w-4 h-4" /> Send
         </button>
       </form>
+
+      {/* Status: waiting for first tokens / errors / notices */}
+      {loading && (!analysis || !analysis.root_cause_analysis) && (
+        <div className="p-4 rounded-xl bg-slate-900 border border-purple-800/40 flex items-center gap-3 text-xs text-slate-300">
+          <Loader2 className="w-4 h-4 animate-spin text-purple-400 flex-shrink-0" />
+          <span>
+            Waiting for the local model to start answering… {elapsed}s
+            {elapsed > 10 && ' (the first request loads the model into memory and can take ~30s on CPU)'}
+          </span>
+        </div>
+      )}
+      {error && (
+        <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-800 flex items-start gap-3 text-xs text-rose-200">
+          <XCircle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+      {notice && (
+        <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-800 flex items-start gap-3 text-xs text-amber-200">
+          <Info className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+          <span>{notice}</span>
+        </div>
+      )}
 
       {/* AI Analysis Result */}
       {analysis && (
@@ -170,10 +259,12 @@ export function AITab() {
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Detailed Diagnostic Findings</h4>
               <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80 text-xs text-slate-300 leading-relaxed font-sans whitespace-pre-wrap">
                 {analysis.root_cause_analysis}
+                {loading && <span className="inline-block w-2 h-3.5 ml-0.5 align-middle bg-purple-400 animate-pulse" />}
               </div>
             </div>
 
             {/* Actionable Recommendations */}
+            {analysis.recommendations.length > 0 && (
             <div className="space-y-2">
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Lightbulb className="w-4 h-4 text-amber-400" /> SRE Action Plan
@@ -191,7 +282,10 @@ export function AITab() {
               </div>
             </div>
 
-            {/* Suggested Kubectl Commands */}
+            )}
+
+            {/* Suggested Kubectl Commands (extracted from the model's answer) */}
+            {analysis.suggested_commands.length > 0 && (
             <div className="space-y-2">
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Terminal className="w-4 h-4 text-cyan-400" /> Suggested Kubectl Diagnostic Commands
@@ -215,6 +309,7 @@ export function AITab() {
                 ))}
               </div>
             </div>
+            )}
           </div>
         </div>
       )}
