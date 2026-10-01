@@ -4,8 +4,7 @@ from app.main import app
 from app.monitoring.prometheus import PrometheusMetricsService
 
 
-def test_prometheus_metric_parsing():
-    service = PrometheusMetricsService()
+def test_prometheus_series_by_timestamp():
     sample = {
         "data": {
             "result": [
@@ -13,15 +12,15 @@ def test_prometheus_metric_parsing():
                     "values": [
                         [1700000000, "40.0"],
                         [1700000060, "42.0"],
-                        [1700000120, "38.5"],
+                        [1700000120, "not-a-number"],
                     ]
                 }
             ]
         }
     }
 
-    result = service._normalize_series_to_values(sample)
-    assert result == [40.0, 42.0, 38.5]
+    result = PrometheusMetricsService._series_by_timestamp(sample)
+    assert result == {1700000000: 40.0, 1700000060: 42.0}
 
 
 @pytest.mark.asyncio
@@ -60,5 +59,8 @@ async def test_metrics_endpoint():
         r = await ac.get("/api/metrics/cluster")
         assert r.status_code == 200
         data = r.json()
-        assert "cpu_usage_percent" in data
-        assert "memory_usage_percent" in data
+        # No Prometheus in tests: charts must be empty with an explanation, never synthetic values
+        assert data["available"] is False
+        assert "Prometheus is not reachable" in data["message"]
+        assert all(v is None for v in data["cpu_usage_percent"])
+        assert len(data["timestamps"]) == len(data["memory_usage_percent"])

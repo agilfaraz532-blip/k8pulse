@@ -1,0 +1,48 @@
+# Deploys K8sPulse into a Kubernetes cluster:
+#   cp k8s/secrets.env.example k8s/secrets.env   # then edit the values
+#   kubectl apply -k .
+# Lives at the repository root so it can share monitoring/ files with docker-compose.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: k8spulse
+
+resources:
+  - k8s/namespace.yaml
+  - k8s/rbac.yaml
+  - k8s/configmap.yaml
+  - k8s/postgres/deployment.yaml
+  - k8s/backend/deployment.yaml
+  - k8s/frontend/deployment.yaml
+  - k8s/prometheus/deployment.yaml
+  - k8s/node-exporter/daemonset.yaml
+  - k8s/grafana/deployment.yaml
+
+configMapGenerator:
+  - name: k8spulse-prometheus-config
+    files:
+      - prometheus.yml=k8s/prometheus/prometheus.yml
+      - alert-rules.yml=monitoring/alert-rules.yml
+  - name: k8spulse-grafana-datasources
+    files:
+      - prometheus.yml=monitoring/grafana/provisioning/datasources/prometheus.yml
+  - name: k8spulse-grafana-dashboard-providers
+    files:
+      - k8spulse.yml=monitoring/grafana/provisioning/dashboards/k8spulse.yml
+  - name: k8spulse-grafana-dashboards
+    files:
+      - k8spulse-cluster.json=monitoring/grafana/dashboards/k8spulse-cluster.json
+
+secretGenerator:
+  - name: k8spulse-secrets
+    envs:
+      - k8s/secrets.env
+
+# Images published by .github/workflows/docker-build.yml; override the tag to pin a release
+images:
+  - name: k8pulse-backend
+    newName: ghcr.io/agilfaraz532-blip/k8pulse-backend
+    newTag: latest
+  - name: k8pulse-frontend
+    newName: ghcr.io/agilfaraz532-blip/k8pulse-frontend
+    newTag: latest

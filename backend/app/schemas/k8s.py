@@ -117,7 +117,8 @@ class ClusterOverview(BaseModel):
     memory_bytes_total: float
     memory_bytes_used: float
     memory_percent: float
-    restart_count_24h: int
+    restart_count_24h: int  # total container restarts currently reported by the cluster
+    usage_source: str = "requests"  # "metrics-server" (live usage) or "requests" (resource requests)
 
 
 class PodLogsResponse(BaseModel):

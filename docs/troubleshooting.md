@@ -1,20 +1,37 @@
-# K8sPulse - Troubleshooting Guide
+# K8sPulse — Troubleshooting
 
-## Common Scenarios & Resolutions
+### The dashboard shows the login screen and my password doesn't work
+The admin account is created **once**, the first time the backend starts, from `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
+Changing the variables later does not change an existing account's password.
+- To reset it, delete the user row (`docker exec -it k8spulse-postgres psql -U postgres k8spulse_db -c "delete from users where username='admin';"`) and restart the backend.
+- For local development, set `AUTH_ENABLED=false`.
 
-### 1. "Backend Disconnected" Indicator in UI
-- **Cause**: FastAPI server is not running or port 8000 is blocked.
-- **Fix**: Check `uvicorn app.main:app --port 8000` is active. Check `http://localhost:8000/api/health` directly in the browser.
+### "Kubernetes: unavailable" / the dashboard shows demo data
+No kubeconfig could be loaded. Check the backend logs (`docker logs k8spulse-backend`):
+- **Docker Compose:** `~/.kube/config` must exist on the host (or set `KUBECONFIG_HOST_PATH`).
+- **API server on `127.0.0.1`:** look for `Kubernetes API host rewritten to https://host.docker.internal:<port>`.
+- **TLS errors:** the API server certificate must include `localhost` in its SANs. Docker Desktop, kind and minikube do.
 
-### 2. "Prometheus Unavailable"
-- **Cause**: Prometheus container or daemon is not running on port 9090.
-- **Behavior**: K8sPulse seamlessly falls back to Kubernetes Metrics API and simulated metrics so that graphs never crash.
-- **Fix**: Run `docker compose up -d prometheus` or start Prometheus.
+### CPU/memory charts say "install metrics-server"
+`kubectl top nodes` must work. Install metrics-server with `--kubelet-insecure-tls` (see [deployment.md](deployment.md)).
+If the pod is stuck in `ImagePullBackOff`, your network can't reach `registry.k8s.io`. Retry later, or pull through a mirror.
 
-### 3. CrashLoopBackOff Pods Detected
-- **Diagnosis**: Click **AI Triage** on the pod row in the Pods tab or navigate to the **Gemini SRE Copilot** tab.
-- **Action**: Check `kubectl logs <pod> -c <container> --previous` to identify unhandled exceptions or missing database credentials.
+### Network chart says "node-exporter is not being scraped"
+Open http://localhost:9090/targets. The `node-exporter` target must be **UP**.
+- **Docker Compose:** node-exporter runs with host networking and Prometheus reaches it via `172.29.0.1:9100`.
+- **Subnet conflict:** if another network already uses `172.29.0.0/16`, change the subnet in `docker-compose.yml` and the target in `monitoring/prometheus.yml` together.
 
-### 4. Kubernetes Cluster Unreachable
-- **Behavior**: K8sPulse detects lack of active kubeconfig and operates in simulated diagnostic mode so all UI controls and testing work seamlessly.
-- **Fix**: Ensure `kubectl get nodes` succeeds in your terminal, or set `KUBECONFIG_PATH=/path/to/kubeconfig` in `.env`.
+### AI copilot shows an error instead of an answer
+This is intentional: no canned answers are generated. The message says what failed:
+- **Ollama not reachable:** run `ollama serve` and `ollama pull llama3.2`. Then check from the container: `docker exec k8spulse-backend python -c "import httpx;print(httpx.get('http://host.docker.internal:11434/api/tags').status_code)"`.
+- **Slow answers on CPU-only machines:** the first answer takes ~30–60s while the model loads. Text then streams in. Lower `OLLAMA_NUM_PREDICT` for shorter answers.
+- **Gemini fallback fails:** check `GEMINI_API_KEY` (keys from Google AI Studio start with `AIza`) and that your network can reach `generativelanguage.googleapis.com`.
+
+### 502 Bad Gateway from the frontend
+The backend container is starting or crashed. Run `docker logs k8spulse-backend`.
+nginx re-resolves the backend every 10s, so a recreated backend container is picked up automatically.
+
+### No alerts appear
+- Alerts appear only after a condition holds for the rule's **For** duration. Use **Evaluate now** in the Alert Center to run the rules immediately.
+- Disabled rules are not evaluated.
+- Without a cluster connection, the engine does nothing.

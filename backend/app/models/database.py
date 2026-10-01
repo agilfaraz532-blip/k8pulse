@@ -1,6 +1,8 @@
+import asyncio
 import datetime
+from pathlib import Path
 from typing import AsyncGenerator
-from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, Text, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, Text, ForeignKey, JSON, inspect
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, relationship
 from app.core.config import settings
@@ -87,9 +89,34 @@ class AuditLog(Base):
     timestamp = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+async def _is_unversioned_legacy_db() -> bool:
+    """True for databases created by older versions with create_all (tables exist, no alembic_version)."""
+    async with engine.connect() as conn:
+        return await conn.run_sync(
+            lambda sync_conn: inspect(sync_conn).has_table("users")
+            and not inspect(sync_conn).has_table("alembic_version")
+        )
+
+
+def _run_alembic(stamp_legacy: bool) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    if stamp_legacy:
+        command.stamp(cfg, "0001")
+    command.upgrade(cfg, "head")
+
+
 async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    """Bring the database schema up to date by running Alembic migrations."""
+    stamp_legacy = await _is_unversioned_legacy_db()
+    # Alembic's env.py runs its own event loop, so it must run outside this one
+    await asyncio.to_thread(_run_alembic, stamp_legacy)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

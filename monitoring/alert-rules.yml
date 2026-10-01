@@ -1,29 +1,55 @@
 groups:
   - name: k8spulse_cluster_alerts
     rules:
-      - alert: HighNodeCPU
-        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "High CPU utilization detected on node"
-          description: "Node CPU utilization is above 80% for more than 2 minutes."
-
-      - alert: HighNodeMemory
-        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
-        for: 2m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Memory utilization on node"
-          description: "Node Memory utilization exceeds 85%."
-
-      - alert: PodCrashLooping
-        expr: rate(kube_pod_container_status_restarts_total[5m]) * 60 > 2
+      - alert: KubernetesApiUnreachable
+        expr: k8spulse_cluster_up == 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Pod container restarting frequently (CrashLoopBackOff)"
-          description: "Pod has restarted more than 2 times in the last 5 minutes."
+          summary: "K8sPulse cannot reach the Kubernetes API"
+          description: "The backend has not been able to read the cluster for over a minute."
+
+      - alert: NodeNotReady
+        expr: k8spulse_node_ready == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.node }} is NotReady"
+          description: "Node {{ $labels.node }} has reported NotReady for more than a minute."
+
+      - alert: HighClusterCPU
+        expr: 100 * sum(k8spulse_node_cpu_usage_cores) / sum(k8spulse_node_cpu_allocatable_cores) > 80
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cluster CPU usage above 80%"
+          description: "CPU usage is {{ $value | printf \"%.1f\" }}% of allocatable cores."
+
+      - alert: HighClusterMemory
+        expr: 100 * sum(k8spulse_node_memory_usage_bytes) / sum(k8spulse_node_memory_allocatable_bytes) > 85
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cluster memory usage above 85%"
+          description: "Memory usage is {{ $value | printf \"%.1f\" }}% of allocatable memory."
+
+      - alert: UnhealthyPods
+        expr: k8spulse_pods_unhealthy > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} pod(s) failing (CrashLoopBackOff, ImagePullBackOff, Failed)"
+          description: "Pods have been in a failing state for more than 2 minutes."
+
+      - alert: PodRestartingFrequently
+        expr: increase(k8spulse_container_restarts_total[10m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is restarting frequently"
+          description: "More than 3 container restarts in the last 10 minutes."

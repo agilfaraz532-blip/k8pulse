@@ -1,83 +1,85 @@
-# K8sPulse - REST API Reference
+# K8sPulse — REST API Reference
 
-The K8sPulse backend exposes OpenAPI v3 compliant REST endpoints. When running locally, explore interactive Swagger UI at:
-`http://localhost:8000/docs`
+Base path: `/api`. Interactive docs are at `http://localhost:8000/docs`; use **Authorize** to log in.
 
----
+Unless marked **public**, endpoints need `Authorization: Bearer <token>` when `AUTH_ENABLED=true`.
+Without a valid token they return `401`.
 
-## 1. Health & Readiness
+## Authentication
 
-### `GET /api/health`
-Returns overall system status and uptime.
+| Method & path | Description |
+|---|---|
+| `GET /auth/config` **public** | `{"auth_enabled": bool}`; tells the UI whether to show the login screen |
+| `POST /auth/login` **public** | JSON `{"username", "password"}` → `{"access_token", "token_type", "expires_in", "user"}` |
+| `POST /auth/token` **public** | Same, as an OAuth2 password form (used by Swagger) |
+| `GET /auth/me` | The current user |
+| `POST /auth/register` | Create a user (`username`, `email`, `password`, `role`: admin/operator/viewer). **Admin only** |
 
-### `GET /api/health/kubernetes`
-Returns connectivity details to the target Kubernetes cluster API.
+## Health (public)
 
-### `GET /api/health/prometheus`
-Returns reachability of the Prometheus time-series database.
+| Method & path | Description |
+|---|---|
+| `GET /health` | Overall status plus real subsystem checks (`kubernetes`, `prometheus`, `database`) |
+| `GET /health/kubernetes` | API server reachability and whether metrics-server is available |
+| `GET /health/prometheus` | Prometheus reachability |
+| `GET /health/database` | Runs `SELECT 1` |
 
-### `GET /api/health/database`
-Returns PostgreSQL / SQLite connection pool status.
+`GET /health` (without `/api`) is the liveness probe. `GET /metrics` (without `/api`) is the Prometheus scrape endpoint.
 
----
+## Cluster
 
-## 2. Kubernetes Cluster Operations
+| Method & path | Description |
+|---|---|
+| `GET /cluster/overview` | Counts, CPU/memory (`usage_source`: `metrics-server` or `requests`), total restarts |
+| `GET /cluster/nodes` | Nodes with capacity, conditions, taints, and pod count per node |
+| `GET /cluster/pods?namespace=` | Pods with status, restarts, age, and live CPU/memory |
+| `GET /cluster/deployments?namespace=` | Deployments |
+| `GET /cluster/services?namespace=` | Services |
+| `GET /cluster/namespaces` | Namespaces with pod and service counts |
+| `GET /cluster/events?namespace=` | The 50 most recent events |
+| `GET /cluster/logs?namespace=&pod_name=&container_name=&tail_lines=` | Pod logs |
 
-### `GET /api/cluster/overview`
-Returns high-level cluster KPIs (total/ready nodes, total/running pods, deployments, CPU/Memory percentages).
+## Metrics
 
-### `GET /api/cluster/nodes`
-Returns list of nodes, kubelet version, internal IPs, conditions, labels, taints, capacity, and allocatable resources.
+`GET /metrics/cluster` returns one hour of history at 3-minute steps from Prometheus:
+- Series: `cpu_usage_percent`, `memory_usage_percent`, `network_rx_kbps`, `network_tx_kbps`, `pod_restarts`.
+- Gaps where Prometheus has no sample are `null`.
+- `available`, `network_available` and `message` explain missing data.
 
-### `GET /api/cluster/pods`
-Query Params: `namespace` (optional)
-Returns pod inventory with ready ratios, restart counts, IPs, node assignments, and container statuses.
+## Alerts
 
-### `GET /api/cluster/deployments`
-Query Params: `namespace` (optional)
-Returns deployment replica status (`desired`, `ready`, `available`, `updated`) and container images.
+| Method & path | Description |
+|---|---|
+| `GET /alerts/rules` | All rules |
+| `POST /alerts/rules` | Create a rule (fields below) |
+| `PATCH /alerts/rules/{id}` | Update any fields, e.g. `{"is_enabled": false}` |
+| `DELETE /alerts/rules/{id}` | Delete a rule |
+| `POST /alerts/evaluate` | Evaluate all rules now → `{"opened_events": n}` |
+| `GET /alerts/events` | The 200 most recent events, newest first |
+| `POST /alerts/events/{id}/resolve` | Resolve an event manually |
 
-### `GET /api/cluster/services`
-Query Params: `namespace` (optional)
-Returns service types, ClusterIPs, ports, and label selectors.
+Rule fields:
+- `name`
+- `metric_type`: `cpu_percent`, `memory_percent`, `pod_restarts`, `crashloop` or `node_unready`
+- `condition`: `gt`, `lt` or `eq`
+- `threshold`
+- `severity`: `critical`, `warning` or `info`
+- `duration_seconds`: how long the condition must hold before an event opens
+- `is_enabled`
 
-### `GET /api/cluster/events`
-Query Params: `namespace` (optional)
-Returns recent cluster events, reason codes, involved objects, and messages.
+## AI copilot
 
-### `GET /api/cluster/logs`
-Query Params: `namespace`, `pod_name`, `container_name`, `tail_lines`
-Returns streamed pod log lines.
+| Method & path | Description |
+|---|---|
+| `POST /ai/explain-cluster` | Body `{"custom_question"?}` → the full analysis once generation finishes |
+| `POST /ai/explain-cluster/stream` | Same, streamed as NDJSON |
+| `POST /ai/analyze-incident` | Body `{"namespace", "pod_name", "container_name"?, "tail_lines"?}` |
+| `POST /ai/analyze-incident/stream` | Same, streamed as NDJSON |
 
----
+Stream events, one JSON object per line:
+1. `{"type":"meta", "title", "severity", "summary", ...}`
+2. `{"type":"token","text":"..."}`, repeated
+3. `{"type":"done","model_used","suggested_commands","notice"?}`
 
-## 3. Metrics & Telemetry
-
-### `GET /api/metrics/cluster`
-Returns time-series arrays for CPU usage %, Memory usage %, and Network RX/TX KB/s.
-
----
-
-## 4. Alert Management
-
-### `GET /api/alerts/rules`
-Lists configured threshold rules.
-
-### `POST /api/alerts/rules`
-Creates a new threshold rule.
-
-### `GET /api/alerts/events`
-Lists triggered alert incidents.
-
-### `POST /api/alerts/events/{id}/resolve`
-Marks an alert incident as resolved.
-
----
-
-## 5. Google Gemini AI Diagnostics
-
-### `POST /api/ai/explain-cluster`
-Generates an executive diagnosis of cluster health and operational recommendations.
-
-### `POST /api/ai/analyze-incident`
-Performs deep incident triage on crashed or failing pods (`CrashLoopBackOff`, `OOMKilled`).
+If no real answer can be produced (no cluster, no reachable model), the stream ends with
+`{"type":"error","message"}`. The non-streaming endpoints return `503` instead.

@@ -79,3 +79,6 @@ kubeconfig.yaml
 # Local SQLite databases
 *.db
 *.sqlite3
+
+# Kubernetes secrets (generated into a Secret by kustomize)
+k8s/secrets.env

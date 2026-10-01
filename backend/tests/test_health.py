@@ -10,8 +10,12 @@ async def test_health_root():
         response = await ac.get("/api/health")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "healthy"
-        assert "subsystems" in data
+        assert data["status"] in ("healthy", "degraded")
+        assert data["subsystems"]["backend"] == "healthy"
+        # conftest points Prometheus at a closed port and loads no kubeconfig
+        assert data["subsystems"]["prometheus"] == "unavailable"
+        assert data["subsystems"]["kubernetes"] == "unavailable"
+        assert data["subsystems"]["database"] == "healthy"
 
 
 @pytest.mark.asyncio

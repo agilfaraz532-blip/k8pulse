@@ -2,10 +2,16 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: k8spulse-config
-  namespace: k8spulse
 data:
   ENVIRONMENT: "production"
   LOG_LEVEL: "INFO"
   K8S_IN_CLUSTER: "true"
   PROMETHEUS_URL: "http://k8spulse-prometheus:9090"
-  DATABASE_URL: "postgresql+asyncpg://postgres:postgrespassword@k8spulse-postgres:5432/k8spulse_db"
+  # DATABASE_URL contains the Postgres password, so it lives in the k8spulse-secrets Secret
+  AUTH_ENABLED: "true"
+  ALERT_EVAL_INTERVAL_SECONDS: "30"
+  # Ollama is not deployed in the cluster. On Docker Desktop, pods reach an Ollama running on the
+  # host through host.docker.internal; elsewhere point this at your Ollama service.
+  OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+  OLLAMA_MODEL: "llama3.2:latest"
+  GEMINI_MODEL: "gemini-2.5-flash"

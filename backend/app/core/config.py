@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-insecure-secret-key-32-characters-minimum-for-local-testing"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # When disabled, every request is treated as the admin user (local development / tests only)
+    AUTH_ENABLED: bool = True
+    # Bootstrap admin account, created on startup if it does not exist
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = "admin"
+    ADMIN_EMAIL: str = "admin@k8spulse.local"
 
     # Kubernetes
     KUBECONFIG_PATH: str = ""
@@ -67,6 +73,8 @@ class Settings(BaseSettings):
     ALERT_CPU_THRESHOLD_PERCENT: float = 80.0
     ALERT_MEMORY_THRESHOLD_PERCENT: float = 80.0
     ALERT_POD_RESTART_THRESHOLD: int = 5
+    # How often the alert engine evaluates rules against the live cluster
+    ALERT_EVAL_INTERVAL_SECONDS: int = 30
 
     class Config:
         env_file = ".env"

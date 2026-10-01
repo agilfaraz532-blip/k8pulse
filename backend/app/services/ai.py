@@ -5,7 +5,7 @@ import re
 from typing import AsyncIterator, Dict, List, Tuple
 
 import httpx
-import google.generativeai as genai
+from google import genai
 
 from app.core.config import settings
 from app.core.logging import logger
@@ -48,18 +48,19 @@ def extract_kubectl_commands(text: str, limit: int = 8) -> List[str]:
 class GeminiAIService:
     def __init__(self):
         self.api_key = settings.GEMINI_API_KEY
-        self.model_name = settings.GEMINI_MODEL or "gemini-2.5-flash"
-        self.model_name = self.model_name.removeprefix("models/")
-        self.model_name = f"models/{self.model_name}"
+        self.model_name = (settings.GEMINI_MODEL or "gemini-2.5-flash").removeprefix("models/")
         self.ollama_base_url = settings.OLLAMA_BASE_URL.rstrip("/")
         self.ollama_model = settings.OLLAMA_MODEL or "llama3.2:latest"
-        self._is_configured = False
+        self._gemini_client = None
         if self.api_key and self.api_key != "your_gemini_api_key_here":
             try:
-                genai.configure(api_key=self.api_key)
-                self._is_configured = True
+                self._gemini_client = genai.Client(api_key=self.api_key)
             except Exception as e:
                 logger.warning(f"Failed to initialize Gemini API: {e}")
+
+    @property
+    def _is_configured(self) -> bool:
+        return self._gemini_client is not None
 
     # ------------------------------------------------------------------ LLM backends
 
@@ -100,16 +101,18 @@ class GeminiAIService:
                         break
 
     def _call_gemini(self, prompt: str) -> str:
-        base_name = self.model_name.removeprefix("models/")
         candidates = []
-        for item in [self.model_name, f"models/{base_name}", "models/gemini-2.5-flash", "models/gemini-flash-latest"]:
+        for item in [self.model_name, "gemini-2.5-flash", "gemini-flash-latest"]:
             if item not in candidates:
                 candidates.append(item)
 
         last_exc = None
         for model_name in candidates:
             try:
-                return genai.GenerativeModel(model_name).generate_content(prompt).text
+                text = self._gemini_client.models.generate_content(model=model_name, contents=prompt).text
+                if text:
+                    return text
+                last_exc = RuntimeError(f"{model_name} returned an empty response")
             except Exception as exc:
                 last_exc = exc
                 logger.warning(f"Gemini model {model_name} failed: {exc}")

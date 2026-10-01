@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: k8spulse-prometheus
-  namespace: k8spulse
   labels:
     app: k8spulse-prometheus
 spec:
@@ -18,8 +17,22 @@ spec:
       containers:
         - name: prometheus
           image: prom/prometheus:v2.53.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=7d"
           ports:
             - containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
           resources:
             requests:
               cpu: "150m"
@@ -27,12 +40,17 @@ spec:
             limits:
               cpu: "500m"
               memory: "1Gi"
+      volumes:
+        - name: config
+          configMap:
+            name: k8spulse-prometheus-config
+        - name: data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: k8spulse-prometheus
-  namespace: k8spulse
 spec:
   selector:
     app: k8spulse-prometheus

@@ -84,7 +84,7 @@ async def test_ai_stream_reports_error_when_no_model(monkeypatch):
 
     monkeypatch.setattr(gemini_service, "_require_cluster", lambda: None)
     monkeypatch.setattr(gemini_service, "_stream_ollama", broken_stream)
-    monkeypatch.setattr(gemini_service, "_is_configured", False)
+    monkeypatch.setattr(gemini_service, "_gemini_client", None)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

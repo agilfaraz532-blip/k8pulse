@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: k8spulse-frontend
-  namespace: k8spulse
   labels:
     app: k8spulse-frontend
 spec:
@@ -17,10 +16,21 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: k8spulse/frontend:latest
+          image: k8pulse-frontend
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
+          env:
+            # Rendered into the nginx config at startup (see frontend/templates/default.conf.template)
+            - name: BACKEND_UPSTREAM
+              value: "k8spulse-backend:8000"
+            - name: DNS_RESOLVER
+              value: "kube-dns.kube-system.svc.cluster.local"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 10
           resources:
             requests:
               cpu: "50m"
@@ -33,7 +43,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: k8spulse-frontend
-  namespace: k8spulse
 spec:
   type: NodePort
   selector:

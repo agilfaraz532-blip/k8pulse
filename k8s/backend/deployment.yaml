@@ -2,11 +2,14 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: k8spulse-backend
-  namespace: k8spulse
   labels:
     app: k8spulse-backend
 spec:
-  replicas: 2
+  # Single replica: the alert engine runs inside the API process, so more replicas
+  # would evaluate rules (and open alert events) more than once.
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: k8spulse-backend
@@ -16,12 +19,24 @@ spec:
         app: k8spulse-backend
     spec:
       serviceAccountName: k8spulse-viewer-sa
+      initContainers:
+        # Apply database migrations before the API starts
+        - name: migrate
+          image: k8pulse-backend
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: k8spulse-config
+            - secretRef:
+                name: k8spulse-secrets
       containers:
         - name: backend
-          image: k8spulse/backend:latest
+          image: k8pulse-backend
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
+              name: http
           envFrom:
             - configMapRef:
                 name: k8spulse-config
@@ -29,7 +44,7 @@ spec:
                 name: k8spulse-secrets
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /api/health/database
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -42,7 +57,7 @@ spec:
           resources:
             requests:
               cpu: "100m"
-              memory: "128Mi"
+              memory: "192Mi"
             limits:
               cpu: "500m"
               memory: "512Mi"
@@ -51,10 +66,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: k8spulse-backend
-  namespace: k8spulse
+  labels:
+    app: k8spulse-backend
 spec:
   selector:
     app: k8spulse-backend
   ports:
     - port: 8000
       targetPort: 8000
+      name: http

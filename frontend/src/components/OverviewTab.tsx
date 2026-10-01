@@ -57,11 +57,18 @@ export function OverviewTab({
 }: OverviewTabProps) {
   const chartData = (metrics?.timestamps || []).map((time, idx) => ({
     time,
-    cpu: metrics?.cpu_usage_percent[idx] ?? 0,
-    memory: metrics?.memory_usage_percent[idx] ?? 0,
-    networkRx: metrics?.network_rx_kbps[idx] ?? 0,
-    networkTx: metrics?.network_tx_kbps[idx] ?? 0,
+    cpu: metrics?.cpu_usage_percent[idx] ?? null,
+    memory: metrics?.memory_usage_percent[idx] ?? null,
+    networkRx: metrics?.network_rx_kbps[idx] ?? null,
+    networkTx: metrics?.network_tx_kbps[idx] ?? null,
   }));
+  const usageLabel = overview?.usage_source === 'metrics-server' ? 'usage' : 'requested';
+
+  const chartPlaceholder = (message: string) => (
+    <div className="h-56 w-full flex items-center justify-center text-center px-6 text-xs text-slate-500 border border-dashed border-slate-800 rounded-lg">
+      {message}
+    </div>
+  );
 
   const getStatusBadge = (status?: string) => {
     switch (status) {
@@ -231,7 +238,7 @@ export function OverviewTab({
 
           <div className="p-4 rounded-xl bg-[#111827] border border-slate-800/80">
             <div className="flex items-center justify-between">
-              <p className="text-[11px] text-slate-400 font-medium">Cluster CPU</p>
+              <p className="text-[11px] text-slate-400 font-medium">Cluster CPU {usageLabel}</p>
               <Cpu className="w-3.5 h-3.5 text-cyan-400" />
             </div>
             <div className="flex items-baseline justify-between mt-2">
@@ -244,13 +251,13 @@ export function OverviewTab({
 
           <div className="p-4 rounded-xl bg-[#111827] border border-slate-800/80">
             <div className="flex items-center justify-between">
-              <p className="text-[11px] text-slate-400 font-medium">Cluster Memory</p>
+              <p className="text-[11px] text-slate-400 font-medium">Cluster Memory {usageLabel}</p>
               <Activity className="w-3.5 h-3.5 text-purple-400" />
             </div>
             <div className="flex items-baseline justify-between mt-2">
               <h3 className="text-2xl font-bold text-white font-mono">{overview?.memory_percent ?? '—'}%</h3>
               <span className="text-[10px] text-slate-400 font-medium">
-                {overview?.memory_bytes_used ?? '—'} / {overview?.memory_bytes_total ?? '—'} GB
+                {overview?.memory_bytes_used ?? '—'} / {overview?.memory_bytes_total ?? '—'} GiB
               </span>
             </div>
           </div>
@@ -260,14 +267,14 @@ export function OverviewTab({
             className="p-4 rounded-xl bg-[#111827] border border-slate-800/80 hover:border-amber-500/50 cursor-pointer transition-all"
           >
             <div className="flex items-center justify-between">
-              <p className="text-[11px] text-slate-400 font-medium">24h Restarts</p>
+              <p className="text-[11px] text-slate-400 font-medium">Container Restarts</p>
               <Activity className="w-3.5 h-3.5 text-amber-400" />
             </div>
             <div className="flex items-baseline justify-between mt-2">
               <h3 className="text-2xl font-bold text-amber-400 font-mono">
                 {overview?.restart_count_24h ?? '—'}
               </h3>
-              <span className="text-[10px] text-amber-400 font-medium">Live restarts</span>
+              <span className="text-[10px] text-amber-400 font-medium">Total (all pods)</span>
             </div>
           </div>
         </div>
@@ -280,7 +287,7 @@ export function OverviewTab({
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-slate-200">CPU & Memory Utilization (%)</h3>
-              <p className="text-[11px] text-slate-500">PromQL query: rate(node_cpu_seconds_total)</p>
+              <p className="text-[11px] text-slate-500">Last hour · metrics-server via Prometheus</p>
             </div>
             <div className="flex items-center gap-4 text-xs">
               <span className="flex items-center gap-1.5 text-cyan-400">
@@ -292,6 +299,9 @@ export function OverviewTab({
             </div>
           </div>
 
+          {metrics && !metrics.available ? (
+            chartPlaceholder(metrics.message || 'No metric data available yet.')
+          ) : (
           <div className="h-56 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData}>
@@ -320,6 +330,7 @@ export function OverviewTab({
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          )}
         </div>
 
         {/* Network I/O Chart */}
@@ -327,7 +338,7 @@ export function OverviewTab({
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-slate-200">Cluster Network I/O (KB/s)</h3>
-              <p className="text-[11px] text-slate-500">PromQL: sum(rate(container_network_receive_bytes_total))</p>
+              <p className="text-[11px] text-slate-500">Last hour · node-exporter via Prometheus</p>
             </div>
             <div className="flex items-center gap-4 text-xs">
               <span className="flex items-center gap-1 text-emerald-400">
@@ -339,6 +350,11 @@ export function OverviewTab({
             </div>
           </div>
 
+          {metrics && !metrics.network_available ? (
+            chartPlaceholder(
+              metrics.available ? metrics.message || 'No network data available.' : metrics.message || 'No metric data available yet.',
+            )
+          ) : (
           <div className="h-56 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData}>
@@ -367,10 +383,11 @@ export function OverviewTab({
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          )}
         </div>
       </div>
 
-      {/* Events Stream & Gemini AI Teaser */}
+      {/* Events Stream & AI Copilot Teaser */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 p-5 rounded-xl bg-[#111827] border border-slate-800/80 space-y-4">
           <div className="flex items-center justify-between">

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. PostgreSQL Database
   postgres:
@@ -34,38 +32,60 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
       - '--web.enable-lifecycle'
     ports:
       - "9090:9090"
     networks:
       - k8spulse-net
 
-  # 3. Grafana Visualizations
+  # 3. Host metrics (CPU, memory, network) for the Docker host / Kubernetes node.
+  # Host networking exposes the real interfaces; Prometheus reaches it via the
+  # k8spulse-net gateway (172.29.0.1), which is the Docker host.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: k8spulse-node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--web.listen-address=:9100'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+
+  # 4. Grafana Visualizations (datasource + dashboard are provisioned automatically)
   grafana:
     image: grafana/grafana:11.0.0
     container_name: k8spulse-grafana
     restart: unless-stopped
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/k8spulse-cluster.json
+      - PROMETHEUS_URL=http://prometheus:9090
     ports:
       - "3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
     networks:
       - k8spulse-net
 
-  # 4. FastAPI Observability Backend
+  # 5. FastAPI Observability Backend
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: k8spulse-backend
     restart: unless-stopped
-    # Secrets such as GEMINI_API_KEY come from backend/.env (optional; never baked into the image)
+    # Secrets such as GEMINI_API_KEY / ADMIN_PASSWORD come from backend/.env (optional; never baked into the image)
     env_file:
       - path: ./backend/.env
         required: false
@@ -82,7 +102,6 @@ services:
       # Ollama runs on the host machine, not inside the compose network
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:latest}
-      - SECRET_KEY=${SECRET_KEY:-change-this-to-a-super-secret-hex-key-in-production}
     volumes:
       - ${KUBECONFIG_HOST_PATH:-~/.kube/config}:/root/.kube/config:ro
     extra_hosts:
@@ -97,7 +116,7 @@ services:
     networks:
       - k8spulse-net
 
-  # 5. React Dashboard UI
+  # 6. React Dashboard UI
   frontend:
     build:
       context: ./frontend
@@ -115,6 +134,11 @@ services:
 networks:
   k8spulse-net:
     driver: bridge
+    # Fixed subnet so the gateway (the Docker host, where node-exporter listens) is predictable
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+          gateway: 172.29.0.1
 
 volumes:
   postgres_data:

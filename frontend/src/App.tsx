@@ -13,6 +13,7 @@ import {
   XCircle,
   Radio,
   Search,
+  LogOut,
 } from 'lucide-react';
 
 import {
@@ -56,8 +57,46 @@ import { DeploymentsTab } from './components/DeploymentsTab';
 import { LogsTab } from './components/LogsTab';
 import { AlertsTab } from './components/AlertsTab';
 import { AITab, IncidentTarget } from './components/AITab';
+import { LoginPage } from './components/LoginPage';
+import { AuthUser, UNAUTHORIZED_EVENT, fetchAuthConfig, fetchCurrentUser, getToken, logout } from './services/api';
 
 export default function App() {
+  // undefined = still checking, null = must log in
+  const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
+
+  useEffect(() => {
+    const checkSession = async () => {
+      try {
+        const { auth_enabled } = await fetchAuthConfig();
+        if (!auth_enabled) {
+          setUser({ id: 0, username: 'local', email: '', role: 'admin', is_active: true });
+        } else if (!getToken()) {
+          setUser(null);
+        } else {
+          setUser(await fetchCurrentUser());
+        }
+      } catch {
+        setUser(getToken() ? undefined : null);
+      }
+    };
+    checkSession();
+    const onUnauthorized = () => setUser(null);
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+  }, []);
+
+  if (user === undefined) {
+    return (
+      <div className="h-screen w-screen bg-[#0B0F19] flex items-center justify-center text-slate-400 text-sm font-sans">
+        Connecting to K8sPulse API…
+      </div>
+    );
+  }
+  if (user === null) return <LoginPage onLoggedIn={setUser} />;
+  return <Dashboard user={user} />;
+}
+
+function Dashboard({ user }: { user: AuthUser }) {
   const [activeTab, setActiveTab] = useState<'overview' | 'nodes' | 'pods' | 'deployments' | 'logs' | 'alerts' | 'ai'>('overview');
   const [logTarget, setLogTarget] = useState<{ namespace: string; podName: string } | null>(null);
   const [incidentTarget, setIncidentTarget] = useState<IncidentTarget | null>(null);
@@ -248,8 +287,18 @@ export default function App() {
           </div>
           <div className="flex justify-between">
             <span>Namespaces:</span>
-            <span className="font-mono text-cyan-400">{namespaces.length || 5}</span>
+            <span className="font-mono text-cyan-400">{namespaces.length}</span>
           </div>
+          {user.username !== 'local' && (
+            <div className="flex justify-between items-center pt-1">
+              <span className="truncate">
+                Signed in: <span className="text-slate-300">{user.username}</span>
+              </span>
+              <button onClick={logout} className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
+                <LogOut className="w-3 h-3" /> Logout
+              </button>
+            </div>
+          )}
         </div>
       </aside>
 

@@ -15,12 +15,16 @@ class MetricSeries(BaseModel):
 
 class ClusterMetricsOverview(BaseModel):
     timestamps: List[str]
-    cpu_usage_percent: List[float]
-    memory_usage_percent: List[float]
-    network_rx_kbps: List[float]
-    network_tx_kbps: List[float]
-    pod_restarts: List[int]
+    # None marks a gap where Prometheus has no sample
+    cpu_usage_percent: List[Optional[float]]
+    memory_usage_percent: List[Optional[float]]
+    network_rx_kbps: List[Optional[float]]
+    network_tx_kbps: List[Optional[float]]
+    pod_restarts: List[Optional[int]]
     total_cpu_cores: float
     used_cpu_cores: float
     total_memory_gb: float
     used_memory_gb: float
+    available: bool = True
+    network_available: bool = True
+    message: Optional[str] = None

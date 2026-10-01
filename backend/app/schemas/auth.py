@@ -4,11 +4,13 @@ from pydantic import BaseModel, EmailStr
 
 class UserBase(BaseModel):
     username: str
-    email: EmailStr
+    email: str
     role: str = "operator"
 
 
 class UserCreate(UserBase):
+    # Format is validated only for new accounts; stored addresses are returned as-is
+    email: EmailStr
     password: str
 
 

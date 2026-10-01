@@ -12,6 +12,16 @@ class AlertRuleCreate(BaseModel):
     is_enabled: bool = True
 
 
+class AlertRuleUpdate(BaseModel):
+    name: Optional[str] = None
+    metric_type: Optional[str] = None
+    condition: Optional[str] = None
+    threshold: Optional[float] = None
+    severity: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    is_enabled: Optional[bool] = None
+
+
 class AlertRuleResponse(AlertRuleCreate):
     id: int
     created_at: str

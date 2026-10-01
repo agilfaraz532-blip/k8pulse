@@ -26,6 +26,7 @@ class KubernetesClientService:
         self.core_v1: Optional[client.CoreV1Api] = None
         self.apps_v1: Optional[client.AppsV1Api] = None
         self.version_api: Optional[client.VersionApi] = None
+        self.custom_api: Optional[client.CustomObjectsApi] = None
         self._init_client()
 
     def _init_client(self):
@@ -42,6 +43,7 @@ class KubernetesClientService:
             self.core_v1 = client.CoreV1Api()
             self.apps_v1 = client.AppsV1Api()
             self.version_api = client.VersionApi()
+            self.custom_api = client.CustomObjectsApi()
             self.is_connected = True
         except Exception as exc:
             logger.warning(f"Could not connect to live Kubernetes cluster: {exc}. Dashboard will show simulated demo data; AI analysis is disabled until a cluster is reachable.")
@@ -95,15 +97,22 @@ class KubernetesClientService:
                 # Capacity from nodes; usage approximated by resource requests (metrics-server is optional)
                 total_cpu = sum(float(parse_quantity(n.status.allocatable.get("cpu", "0"))) for n in nodes)
                 total_mem = sum(float(parse_quantity(n.status.allocatable.get("memory", "0"))) for n in nodes)
-                used_cpu = 0.0
-                used_mem = 0.0
-                for p in pods:
-                    if p.status.phase not in ("Running", "Pending"):
-                        continue
-                    for c in p.spec.containers:
-                        requests = (c.resources.requests or {}) if c.resources else {}
-                        used_cpu += float(parse_quantity(requests.get("cpu", "0")))
-                        used_mem += float(parse_quantity(requests.get("memory", "0")))
+                usage = self.get_usage()
+                if usage and usage["nodes"]:
+                    usage_source = "metrics-server"
+                    used_cpu = sum(cpu for cpu, _ in usage["nodes"].values())
+                    used_mem = sum(mem for _, mem in usage["nodes"].values())
+                else:
+                    usage_source = "requests"
+                    used_cpu = 0.0
+                    used_mem = 0.0
+                    for p in pods:
+                        if p.status.phase not in ("Running", "Pending"):
+                            continue
+                        for c in p.spec.containers:
+                            requests = (c.resources.requests or {}) if c.resources else {}
+                            used_cpu += float(parse_quantity(requests.get("cpu", "0")))
+                            used_mem += float(parse_quantity(requests.get("memory", "0")))
                 gib = 1024 ** 3
 
                 version = "v1.30.2"
@@ -133,6 +142,7 @@ class KubernetesClientService:
                     memory_bytes_used=round(used_mem / gib, 2),
                     memory_percent=round(100 * used_mem / total_mem, 1) if total_mem else 0.0,
                     restart_count_24h=restart_total,
+                    usage_source=usage_source,
                 )
             except Exception as e:
                 logger.warning(f"Error fetching live cluster overview: {e}")
@@ -159,6 +169,52 @@ class KubernetesClientService:
             memory_percent=55.0,
             restart_count_24h=2,
         )
+
+    def get_usage(self) -> Optional[Dict[str, Dict]]:
+        """
+        Live CPU (cores) / memory (bytes) usage from the metrics.k8s.io API (metrics-server).
+        Returns None when metrics-server is not installed or not ready.
+        """
+        if not (self.is_connected and self.custom_api):
+            return None
+        try:
+            node_items = self.custom_api.list_cluster_custom_object("metrics.k8s.io", "v1beta1", "nodes")["items"]
+            pod_items = self.custom_api.list_cluster_custom_object("metrics.k8s.io", "v1beta1", "pods")["items"]
+        except Exception as exc:
+            logger.debug(f"metrics.k8s.io unavailable: {exc}")
+            return None
+
+        nodes = {
+            n["metadata"]["name"]: (float(parse_quantity(n["usage"]["cpu"])), float(parse_quantity(n["usage"]["memory"])))
+            for n in node_items
+        }
+        pods = {}
+        for p in pod_items:
+            cpu = sum(float(parse_quantity(c["usage"]["cpu"])) for c in p.get("containers", []))
+            mem = sum(float(parse_quantity(c["usage"]["memory"])) for c in p.get("containers", []))
+            pods[(p["metadata"]["namespace"], p["metadata"]["name"])] = (cpu, mem)
+        return {"nodes": nodes, "pods": pods}
+
+    @staticmethod
+    def _age(timestamp) -> str:
+        if not timestamp:
+            return "unknown"
+        seconds = int((datetime.datetime.now(datetime.timezone.utc) - timestamp).total_seconds())
+        if seconds >= 86400:
+            return f"{seconds // 86400}d"
+        if seconds >= 3600:
+            return f"{seconds // 3600}h"
+        if seconds >= 60:
+            return f"{seconds // 60}m"
+        return f"{max(seconds, 0)}s"
+
+    @staticmethod
+    def _fmt_cpu(cores: float) -> str:
+        return f"{round(cores * 1000)}m"
+
+    @staticmethod
+    def _fmt_mem(num_bytes: float) -> str:
+        return f"{round(num_bytes / 1024 ** 2)}Mi"
 
     UNHEALTHY_WAITING_REASONS = {
         "CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError",
@@ -190,6 +246,10 @@ class KubernetesClientService:
             try:
                 res = []
                 node_list = self.core_v1.list_node().items
+                pods_per_node: Dict[str, int] = {}
+                for p in self.core_v1.list_pod_for_all_namespaces().items:
+                    if p.spec.node_name and p.status.phase not in ("Succeeded", "Failed"):
+                        pods_per_node[p.spec.node_name] = pods_per_node.get(p.spec.node_name, 0) + 1
                 for n in node_list:
                     status = "Ready" if any(c.type == "Ready" and c.status == "True" for c in n.status.conditions) else "NotReady"
                     roles = [k.split("/")[1] for k in n.metadata.labels if k.startswith("node-role.kubernetes.io/")] or ["worker"]
@@ -219,7 +279,7 @@ class KubernetesClientService:
                         cpu_allocatable=n.status.allocatable.get("cpu", "3800m"),
                         memory_capacity=n.status.capacity.get("memory", "8Gi"),
                         memory_allocatable=n.status.allocatable.get("memory", "7.2Gi"),
-                        pods_count=8,
+                        pods_count=pods_per_node.get(n.metadata.name, 0),
                         conditions=conditions,
                         labels=dict(n.metadata.labels or {}),
                         taints=taints,
@@ -305,6 +365,7 @@ class KubernetesClientService:
                     pod_list = self.core_v1.list_namespaced_pod(namespace=namespace).items
                 else:
                     pod_list = self.core_v1.list_pod_for_all_namespaces().items
+                pod_usage = (self.get_usage() or {}).get("pods", {})
 
                 for p in pod_list:
                     container_statuses = []
@@ -346,7 +407,11 @@ class KubernetesClientService:
                         restarts=total_restarts,
                         node_name=p.spec.node_name,
                         pod_ip=p.status.pod_ip,
-                        age="3d",
+                        age=self._age(p.metadata.creation_timestamp),
+                        cpu_usage=self._fmt_cpu(pod_usage[(p.metadata.namespace, p.metadata.name)][0])
+                        if (p.metadata.namespace, p.metadata.name) in pod_usage else None,
+                        memory_usage=self._fmt_mem(pod_usage[(p.metadata.namespace, p.metadata.name)][1])
+                        if (p.metadata.namespace, p.metadata.name) in pod_usage else None,
                         created_at=str(p.metadata.creation_timestamp),
                         labels=dict(p.metadata.labels or {}),
                         containers=container_statuses,
@@ -662,12 +727,18 @@ class KubernetesClientService:
             try:
                 res = []
                 ns_list = self.core_v1.list_namespace().items
+                pod_counts: Dict[str, int] = {}
+                for p in self.core_v1.list_pod_for_all_namespaces().items:
+                    pod_counts[p.metadata.namespace] = pod_counts.get(p.metadata.namespace, 0) + 1
+                svc_counts: Dict[str, int] = {}
+                for svc in self.core_v1.list_service_for_all_namespaces().items:
+                    svc_counts[svc.metadata.namespace] = svc_counts.get(svc.metadata.namespace, 0) + 1
                 for ns in ns_list:
                     res.append(NamespaceInfo(
                         name=ns.metadata.name,
                         status=ns.status.phase or "Active",
-                        pod_count=4,
-                        service_count=2,
+                        pod_count=pod_counts.get(ns.metadata.name, 0),
+                        service_count=svc_counts.get(ns.metadata.name, 0),
                         created_at=str(ns.metadata.creation_timestamp),
                     ))
                 return res

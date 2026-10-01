@@ -18,7 +18,7 @@ export interface KubernetesHealth {
   status: string;
   message: string;
   in_cluster: boolean;
-  kubeconfig: string;
+  metrics_server?: boolean;
 }
 
 export interface PrometheusHealth {
@@ -156,6 +156,7 @@ export interface ClusterOverview {
   memory_bytes_used: number;
   memory_percent: number;
   restart_count_24h: number;
+  usage_source: 'metrics-server' | 'requests';
 }
 
 export interface PodLogsResponse {
@@ -168,15 +169,19 @@ export interface PodLogsResponse {
 
 export interface ClusterMetricsOverview {
   timestamps: string[];
-  cpu_usage_percent: number[];
-  memory_usage_percent: number[];
-  network_rx_kbps: number[];
-  network_tx_kbps: number[];
-  pod_restarts: number[];
+  // null = no Prometheus sample for that time bucket
+  cpu_usage_percent: (number | null)[];
+  memory_usage_percent: (number | null)[];
+  network_rx_kbps: (number | null)[];
+  network_tx_kbps: (number | null)[];
+  pod_restarts: (number | null)[];
   total_cpu_cores: number;
   used_cpu_cores: number;
   total_memory_gb: number;
   used_memory_gb: number;
+  available: boolean;
+  network_available: boolean;
+  message: string | null;
 }
 
 export interface AlertRule {

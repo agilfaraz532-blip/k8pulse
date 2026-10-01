@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: k8spulse-node-exporter
+  labels:
+    app: k8spulse-node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: k8spulse-node-exporter
+  template:
+    metadata:
+      labels:
+        app: k8spulse-node-exporter
+    spec:
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: node-exporter
+          image: prom/node-exporter:v1.8.2
+          args:
+            - "--path.procfs=/host/proc"
+            - "--path.sysfs=/host/sys"
+            - "--web.listen-address=:9100"
+          ports:
+            - containerPort: 9100
+              name: metrics
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "64Mi"
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+---
+# Headless service: Prometheus discovers every node-exporter pod through DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8spulse-node-exporter
+spec:
+  clusterIP: None
+  selector:
+    app: k8spulse-node-exporter
+  ports:
+    - port: 9100
+      targetPort: 9100
+      name: metrics

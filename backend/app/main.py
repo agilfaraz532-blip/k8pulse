@@ -1,12 +1,16 @@
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
+import asyncio
 import time
+
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.core.config import settings
 from app.core.logging import logger
 from app.models.database import init_db
+from app.monitoring.exporter import registry as metrics_registry
 
 # API Routers
 from app.api.v1.health import router as health_router
@@ -15,6 +19,8 @@ from app.api.v1.metrics import router as metrics_router
 from app.api.v1.alerts import router as alerts_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.ai import router as ai_router
+from app.api.v1.auth import ensure_admin_user, require_user
+from app.services.alerting import alert_engine
 
 
 @asynccontextmanager
@@ -22,10 +28,14 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing K8sPulse Database and Services...")
     try:
         await init_db()
-        logger.info("Database schema initialized successfully.")
+        await ensure_admin_user()
+        await alert_engine.ensure_default_rules()
+        logger.info("Database migrations applied.")
     except Exception as e:
-        logger.warning(f"Database init warning: {e}")
+        logger.error(f"Database initialization failed: {e}")
+    alert_engine.start()
     yield
+    await alert_engine.stop()
     logger.info("Shutting down K8sPulse API Server.")
 
 
@@ -57,7 +67,7 @@ async def add_process_time_and_logging(request: Request, call_next):
     process_time = (time.time() - start_time) * 1000
     response.headers["X-Process-Time-Ms"] = f"{process_time:.2f}"
     
-    if not request.url.path.endswith("/health"):
+    if not request.url.path.endswith(("/health", "/metrics")):
         logger.info(f"{request.method} {request.url.path} - Status: {response.status_code} ({process_time:.1f}ms)")
     
     return response
@@ -74,14 +84,23 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Register API Routers under /api
 app.include_router(health_router, prefix=settings.API_PREFIX)
-app.include_router(cluster_router, prefix=settings.API_PREFIX)
-app.include_router(metrics_router, prefix=settings.API_PREFIX)
-app.include_router(alerts_router, prefix=settings.API_PREFIX)
+# Data routes require a logged-in user (see AUTH_ENABLED); health, auth and /metrics stay public
+protected = [Depends(require_user)]
+app.include_router(cluster_router, prefix=settings.API_PREFIX, dependencies=protected)
+app.include_router(metrics_router, prefix=settings.API_PREFIX, dependencies=protected)
+app.include_router(alerts_router, prefix=settings.API_PREFIX, dependencies=protected)
 app.include_router(auth_router, prefix=settings.API_PREFIX)
-app.include_router(ai_router, prefix=settings.API_PREFIX)
+app.include_router(ai_router, prefix=settings.API_PREFIX, dependencies=protected)
 
 # Direct root health probe for Kubernetes liveness/readiness probes
 app.include_router(health_router)
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics():
+    """Prometheus scrape endpoint with live Kubernetes gauges (see app/monitoring/exporter.py)."""
+    payload = await asyncio.to_thread(generate_latest, metrics_registry)
+    return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/")
