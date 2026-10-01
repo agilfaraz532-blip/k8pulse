@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8spulse-postgres
+  namespace: k8spulse
+  labels:
+    app: k8spulse-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8spulse-postgres
+  template:
+    metadata:
+      labels:
+        app: k8spulse-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: k8spulse-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              value: "k8spulse_db"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8spulse-postgres
+  namespace: k8spulse
+spec:
+  selector:
+    app: k8spulse-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

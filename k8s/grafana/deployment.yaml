@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8spulse-grafana
+  namespace: k8spulse
+  labels:
+    app: k8spulse-grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8spulse-grafana
+  template:
+    metadata:
+      labels:
+        app: k8spulse-grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.0.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "admin"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8spulse-grafana
+  namespace: k8spulse
+spec:
+  selector:
+    app: k8spulse-grafana
+  ports:
+    - port: 3000
+      targetPort: 3000

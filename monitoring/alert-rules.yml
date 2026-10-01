@@ -1,0 +1,29 @@
+groups:
+  - name: k8spulse_cluster_alerts
+    rules:
+      - alert: HighNodeCPU
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High CPU utilization detected on node"
+          description: "Node CPU utilization is above 80% for more than 2 minutes."
+
+      - alert: HighNodeMemory
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Memory utilization on node"
+          description: "Node Memory utilization exceeds 85%."
+
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[5m]) * 60 > 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pod container restarting frequently (CrashLoopBackOff)"
+          description: "Pod has restarted more than 2 times in the last 5 minutes."

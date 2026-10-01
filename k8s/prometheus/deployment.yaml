@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8spulse-prometheus
+  namespace: k8spulse
+  labels:
+    app: k8spulse-prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8spulse-prometheus
+  template:
+    metadata:
+      labels:
+        app: k8spulse-prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          ports:
+            - containerPort: 9090
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8spulse-prometheus
+  namespace: k8spulse
+spec:
+  selector:
+    app: k8spulse-prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
