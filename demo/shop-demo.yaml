@@ -145,13 +145,16 @@ spec:
           command: ['/bin/sh', '-c']
           args:
             - |
+              # Kubernetes expands $(...) in args, so values are computed into ${vars} first.
+              # No timestamps here: the log viewer already shows the Kubernetes timestamp per line.
               i=1000
               while true; do
                 i=$((i+1))
-                ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-                echo "$ts INFO  order-worker: processed order #$i (items=$((i % 5 + 1)), total=\$$((i % 90 + 10)).99)"
-                if [ $((i % 7)) -eq 0 ]; then echo "$ts WARN  order-worker: payment-service unreachable, retrying order #$i in 5s"; fi
-                if [ $((i % 23)) -eq 0 ]; then echo "$ts ERROR order-worker: order #$i failed after 3 retries: connection refused (payment-service:8443)"; fi
+                items=$((i % 5 + 1))
+                amount=$((i % 90 + 10))
+                echo "INFO  order-worker: processed order #${i} (items=${items}, total=${amount}.99 USD)"
+                if [ $((i % 7)) -eq 0 ]; then echo "WARN  order-worker: payment-service unreachable, retrying order #${i} in 5s"; fi
+                if [ $((i % 23)) -eq 0 ]; then echo "ERROR order-worker: order #${i} failed after 3 retries: connection refused (payment-service:8443)"; fi
                 sleep 3
               done
           resources:
