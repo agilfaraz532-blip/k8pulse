@@ -47,8 +47,27 @@ export function Markdown({ text }: { text: string }) {
     list = null;
   };
 
+  let code: string[] | null = null;
+
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trimEnd();
+
+    // Fenced code blocks (```), possibly still open while the answer streams in
+    if (line.trim().startsWith('```')) {
+      if (code === null) {
+        flushList();
+        code = [];
+      } else {
+        blocks.push(<CodeBlock key={blocks.length} lines={code} />);
+        code = null;
+      }
+      continue;
+    }
+    if (code !== null) {
+      code.push(rawLine);
+      continue;
+    }
+
     const heading = line.match(/^#{1,4}\s+(.*)$/);
     const boldHeading = line.match(/^\*\*([^*]+)\*\*:?$/);
     const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
@@ -80,6 +99,17 @@ export function Markdown({ text }: { text: string }) {
     }
   }
   flushList();
+  if (code !== null && code.length) blocks.push(<CodeBlock key={blocks.length} lines={code} />);
 
   return <div className="space-y-2.5">{blocks}</div>;
+}
+
+function CodeBlock({ lines }: { lines: string[] }) {
+  // Models sometimes wrap commands in both a fence and backticks; show the bare command
+  const text = lines.map((l) => l.replace(/^(\s*)`([^`]+)`(.*)$/, '$1$2$3')).join('\n');
+  return (
+    <pre className="p-3 rounded-lg bg-[#090D16] border border-slate-800 text-cyan-300 font-mono text-[11px] overflow-x-auto whitespace-pre">
+      {text}
+    </pre>
+  );
 }
