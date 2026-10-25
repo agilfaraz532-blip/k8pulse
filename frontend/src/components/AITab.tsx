@@ -14,7 +14,9 @@ import {
   XCircle,
   Info,
 } from 'lucide-react';
-import { AIAnalysisResponse } from '../types';
+import { AIAnalysisResponse, PodInfo } from '../types';
+import { needsAttention } from './status';
+import { Markdown } from './Markdown';
 import { streamAIAnalysis, AIStreamTarget } from '../services/api';
 
 export interface IncidentTarget {
@@ -23,11 +25,12 @@ export interface IncidentTarget {
 }
 
 interface AITabProps {
+  pods: PodInfo[];
   incidentTarget?: IncidentTarget | null;
   onIncidentHandled?: () => void;
 }
 
-export function AITab({ incidentTarget, onIncidentHandled }: AITabProps) {
+export function AITab({ pods, incidentTarget, onIncidentHandled }: AITabProps) {
   const [question, setQuestion] = useState('');
   const [analysis, setAnalysis] = useState<AIAnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -104,9 +107,14 @@ export function AITab({ incidentTarget, onIncidentHandled }: AITabProps) {
     setTimeout(() => setCopiedCmd(null), 2000);
   };
 
+  // Suggestions come from the live cluster: troubled pods get a one-click incident analysis
+  const troubledPods = pods
+    .filter(needsAttention)
+    .sort((a, b) => b.restarts - a.restarts)
+    .slice(0, 4);
+
   const quickPrompts = [
     'Explain overall cluster health and node resource balance',
-    'Why is auth-service entering CrashLoopBackOff?',
     'Recommend CPU and memory limit optimizations',
     'Audit recent warning events across all namespaces',
   ];
@@ -143,10 +151,48 @@ export function AITab({ incidentTarget, onIncidentHandled }: AITabProps) {
         </button>
       </div>
 
+      {/* Live incidents detected in the cluster */}
+      {troubledPods.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-slate-400 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 text-rose-400" /> Pods needing attention right now:
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {troubledPods.map((p) => {
+              const lastExit = p.containers.find((c) => c.last_termination_reason)?.last_termination_reason;
+              return (
+                <button
+                  key={`${p.namespace}/${p.name}`}
+                  disabled={loading}
+                  onClick={() => {
+                    setQuestion('');
+                    startStream({ kind: 'incident', namespace: p.namespace, podName: p.name });
+                  }}
+                  className="group text-left p-3 rounded-xl bg-rose-950/20 border border-rose-900/50 hover:border-rose-500/60 hover:bg-rose-950/40 disabled:opacity-50 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-100 truncate">{p.name}</span>
+                    <span className="text-[10px] font-mono text-rose-300 flex-shrink-0">{p.status}</span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                    <span className="font-mono truncate">
+                      {p.namespace} · {p.restarts} restarts{lastExit ? ` · last exit: ${lastExit}` : ''}
+                    </span>
+                    <span className="text-purple-300 group-hover:text-purple-200 flex items-center gap-1 flex-shrink-0">
+                      <Sparkles className="w-3 h-3" /> Diagnose
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Quick Prompts */}
       <div className="space-y-2">
         <p className="text-xs font-semibold text-slate-400 flex items-center gap-1.5">
-          <HelpCircle className="w-3.5 h-3.5 text-purple-400" /> Quick SRE Diagnostic Prompts:
+          <HelpCircle className="w-3.5 h-3.5 text-purple-400" /> Ask about the whole cluster:
         </p>
         <div className="flex flex-wrap gap-2">
           {quickPrompts.map((p, idx) => (
@@ -224,10 +270,12 @@ export function AITab({ incidentTarget, onIncidentHandled }: AITabProps) {
                   className={`w-9 h-9 rounded-lg flex items-center justify-center ${
                     analysis.severity === 'Critical'
                       ? 'bg-rose-950 text-rose-400 border border-rose-800'
+                      : analysis.severity === 'Normal'
+                      ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
                       : 'bg-amber-950 text-amber-400 border border-amber-800'
                   }`}
                 >
-                  <AlertTriangle className="w-5 h-5" />
+                  {analysis.severity === 'Normal' ? <CheckCircle2 className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-white">{analysis.title}</h3>
@@ -241,7 +289,9 @@ export function AITab({ incidentTarget, onIncidentHandled }: AITabProps) {
                 className={`px-3 py-1 rounded-full text-xs font-semibold self-start sm:self-auto ${
                   analysis.severity === 'Critical'
                     ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                    : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                    : analysis.severity === 'Normal'
+                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                    : 'bg-amber-950 text-amber-300 border border-amber-800'
                 }`}
               >
                 Severity: {analysis.severity}
@@ -257,9 +307,9 @@ export function AITab({ incidentTarget, onIncidentHandled }: AITabProps) {
             {/* Root Cause Markdown Breakdown */}
             <div className="space-y-2">
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Detailed Diagnostic Findings</h4>
-              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80 text-xs text-slate-300 leading-relaxed font-sans whitespace-pre-wrap">
-                {analysis.root_cause_analysis}
-                {loading && <span className="inline-block w-2 h-3.5 ml-0.5 align-middle bg-purple-400 animate-pulse" />}
+              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80 text-xs text-slate-300 leading-relaxed font-sans">
+                <Markdown text={analysis.root_cause_analysis} />
+                {loading && <span className="inline-block w-2 h-3.5 mt-1 align-middle bg-purple-400 animate-pulse" />}
               </div>
             </div>
 

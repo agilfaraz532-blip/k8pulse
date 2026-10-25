@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
   Server,
@@ -11,9 +11,12 @@ import {
   Clock,
   ShieldCheck,
   XCircle,
-  Radio,
   Search,
   LogOut,
+  Menu,
+  X,
+  Loader2,
+  WifiOff,
 } from 'lucide-react';
 
 import {
@@ -50,15 +53,25 @@ import {
   AlertEvent,
 } from './types';
 
-import { OverviewTab } from './components/OverviewTab';
-import { NodesTab } from './components/NodesTab';
-import { PodsTab } from './components/PodsTab';
-import { DeploymentsTab } from './components/DeploymentsTab';
-import { LogsTab } from './components/LogsTab';
-import { AlertsTab } from './components/AlertsTab';
-import { AITab, IncidentTarget } from './components/AITab';
+import type { IncidentTarget } from './components/AITab';
 import { LoginPage } from './components/LoginPage';
+import { CommandPalette, SearchTarget } from './components/CommandPalette';
+import { LogoMark, Wordmark } from './components/Logo';
+import { needsAttention } from './components/status';
 import { AuthUser, UNAUTHORIZED_EVENT, fetchAuthConfig, fetchCurrentUser, getToken, logout } from './services/api';
+
+// Each tab is its own chunk so the first screen loads less JavaScript
+const OverviewTab = lazy(() => import('./components/OverviewTab').then((m) => ({ default: m.OverviewTab })));
+const NodesTab = lazy(() => import('./components/NodesTab').then((m) => ({ default: m.NodesTab })));
+const PodsTab = lazy(() => import('./components/PodsTab').then((m) => ({ default: m.PodsTab })));
+const DeploymentsTab = lazy(() => import('./components/DeploymentsTab').then((m) => ({ default: m.DeploymentsTab })));
+const LogsTab = lazy(() => import('./components/LogsTab').then((m) => ({ default: m.LogsTab })));
+const AlertsTab = lazy(() => import('./components/AlertsTab').then((m) => ({ default: m.AlertsTab })));
+const AITab = lazy(() => import('./components/AITab').then((m) => ({ default: m.AITab })));
+
+type TabId = 'overview' | 'nodes' | 'pods' | 'deployments' | 'logs' | 'alerts' | 'ai';
+
+const REFRESH_MS = 10000;
 
 export default function App() {
   // undefined = still checking, null = must log in
@@ -87,8 +100,11 @@ export default function App() {
 
   if (user === undefined) {
     return (
-      <div className="h-screen w-screen bg-[#0B0F19] flex items-center justify-center text-slate-400 text-sm font-sans">
-        Connecting to K8sPulse API…
+      <div className="h-[100dvh] w-screen bg-[#0B0F19] flex flex-col items-center justify-center gap-4 text-slate-400 text-sm font-sans">
+        <LogoMark size="lg" />
+        <span className="flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-cyan-400" /> Connecting to K8sPulse…
+        </span>
       </div>
     );
   }
@@ -96,12 +112,22 @@ export default function App() {
   return <Dashboard user={user} />;
 }
 
+function TabFallback() {
+  return (
+    <div className="flex items-center justify-center py-24 text-xs text-slate-500 gap-2">
+      <Loader2 className="w-4 h-4 animate-spin text-cyan-400" /> Loading…
+    </div>
+  );
+}
+
 function Dashboard({ user }: { user: AuthUser }) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'nodes' | 'pods' | 'deployments' | 'logs' | 'alerts' | 'ai'>('overview');
+  const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [logTarget, setLogTarget] = useState<{ namespace: string; podName: string } | null>(null);
   const [incidentTarget, setIncidentTarget] = useState<IncidentTarget | null>(null);
+  const [searchTarget, setSearchTarget] = useState<SearchTarget | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
-  // State
   const [healthData, setHealthData] = useState<HealthResponse | null>(null);
   const [k8sHealth, setK8sHealth] = useState<KubernetesHealth | null>(null);
   const [promHealth, setPromHealth] = useState<PrometheusHealth | null>(null);
@@ -121,27 +147,15 @@ function Dashboard({ user }: { user: AuthUser }) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
   const [backendError, setBackendError] = useState<string | null>(null);
+  const [clusterError, setClusterError] = useState<string | null>(null);
+  const inFlight = useRef(false);
 
-  const loadAllData = async () => {
+  const loadAllData = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setIsLoading(true);
-    setBackendError(null);
     try {
-      const [
-        h,
-        k8sH,
-        promH,
-        dbH,
-        ov,
-        nd,
-        pd,
-        dep,
-        svc,
-        ns,
-        ev,
-        mt,
-        ar,
-        ae,
-      ] = await Promise.allSettled([
+      const [h, k8sH, promH, dbH, ov, nd, pd, dep, svc, ns, ev, mt, ar, ae] = await Promise.allSettled([
         fetchHealth(),
         fetchKubernetesHealth(),
         fetchPrometheusHealth(),
@@ -158,8 +172,14 @@ function Dashboard({ user }: { user: AuthUser }) {
         fetchAlertEvents(),
       ]);
 
-      if (h.status === 'fulfilled') setHealthData(h.value);
-      else setBackendError(h.reason?.message || 'Backend API unreachable');
+      if (h.status === 'fulfilled') {
+        setHealthData(h.value);
+        setBackendError(null);
+      } else {
+        setBackendError(h.reason?.message || 'Backend API unreachable');
+      }
+      // The backend answers but cannot see the cluster: say so instead of showing stale data as live
+      setClusterError(ov.status === 'rejected' ? (ov.reason?.message ?? 'Cluster unavailable').replace(/^API Error \[\d+\]: /, '') : null);
 
       if (k8sH.status === 'fulfilled') setK8sHealth(k8sH.value);
       if (promH.status === 'fulfilled') setPromHealth(promH.value);
@@ -177,70 +197,112 @@ function Dashboard({ user }: { user: AuthUser }) {
     } catch (err: any) {
       setBackendError(err?.message || 'Network error');
     } finally {
+      inFlight.current = false;
       setIsLoading(false);
       setLastRefreshed(new Date());
     }
-  };
+  }, []);
 
+  // Poll while the tab is visible; refresh immediately when the user comes back
   useEffect(() => {
     loadAllData();
-    const interval = setInterval(loadAllData, 10000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      if (!document.hidden) loadAllData();
+    }, REFRESH_MS);
+    const onVisible = () => {
+      if (!document.hidden) loadAllData();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [loadAllData]);
+
+  // Ctrl/⌘+K opens global search
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  const navigate = (tab: TabId) => {
+    setActiveTab(tab);
+    setSidebarOpen(false);
+  };
 
   const handleOpenLogs = (namespace: string, podName: string) => {
     setLogTarget({ namespace, podName });
-    setActiveTab('logs');
+    navigate('logs');
   };
 
   const handleAnalyzeAI = (namespace: string, podName: string) => {
     setIncidentTarget({ namespace, podName });
-    setActiveTab('ai');
+    navigate('ai');
   };
 
-  const navItems = [
+  const handleSearchSelect = (target: SearchTarget) => {
+    setSearchTarget({ ...target });
+    navigate(target.tab);
+  };
+
+  const openAlerts = alertEvents.filter((e) => !e.is_resolved).length;
+  const troubledPods = pods.filter(needsAttention).length;
+
+  const navItems: { id: TabId; label: string; icon: typeof Activity; count: string | null; tone?: 'alert' | 'ai' }[] = [
     { id: 'overview', label: 'Cluster Overview', icon: Activity, count: null },
     { id: 'nodes', label: 'Nodes', icon: Server, count: nodes.length ? String(nodes.length) : null },
-    { id: 'pods', label: 'Pods', icon: Box, count: pods.length ? String(pods.length) : null },
+    { id: 'pods', label: 'Pods', icon: Box, count: pods.length ? String(pods.length) : null, tone: troubledPods ? 'alert' : undefined },
     { id: 'deployments', label: 'Deployments & Services', icon: Layers, count: deployments.length ? String(deployments.length) : null },
-    { id: 'logs', label: 'Terminal Log Viewer', icon: FileText, count: null },
-    { id: 'alerts', label: 'Alert Center', icon: AlertTriangle, count: alertEvents.filter((e) => !e.is_resolved).length ? String(alertEvents.filter((e) => !e.is_resolved).length) : null },
-    { id: 'ai', label: 'AI SRE Copilot', icon: Bot, count: 'AI' },
+    { id: 'logs', label: 'Log Viewer', icon: FileText, count: null },
+    { id: 'alerts', label: 'Alert Center', icon: AlertTriangle, count: openAlerts ? String(openAlerts) : null, tone: 'alert' },
+    { id: 'ai', label: 'AI SRE Copilot', icon: Bot, count: 'AI', tone: 'ai' },
   ];
 
+  const tabSearch = (tab: SearchTarget['tab']) => (searchTarget?.tab === tab ? searchTarget.term : undefined);
+
   return (
-    <div className="flex h-screen w-screen bg-[#0B0F19] text-slate-100 overflow-hidden font-sans">
-      {/* SIDEBAR */}
-      <aside className="w-64 border-r border-slate-800/80 bg-[#0E1322] flex flex-col flex-shrink-0">
-        {/* Branding */}
-        <div className="h-16 flex items-center px-5 gap-3 border-b border-slate-800/80">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <Radio className="w-5 h-5 text-white" />
+    <div className="flex h-[100dvh] w-screen bg-[#0B0F19] text-slate-100 overflow-hidden font-sans">
+      {/* Mobile / tablet backdrop */}
+      {sidebarOpen && <div className="fixed inset-0 z-40 bg-black/60 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+
+      {/* SIDEBAR: static on desktop, slide-in drawer below lg */}
+      <aside
+        className={`fixed lg:static inset-y-0 left-0 z-50 w-64 border-r border-slate-800/80 bg-[#0E1322] flex flex-col flex-shrink-0 transition-transform duration-200 lg:translate-x-0 ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="h-16 flex items-center justify-between px-5 border-b border-slate-800/80">
+          <div className="flex items-center gap-3">
+            <LogoMark />
+            <div>
+              <h1 className="leading-none"><Wordmark /></h1>
+              <p className="text-[10px] text-slate-400 font-mono tracking-wider uppercase mt-1">Cluster Observability</p>
+            </div>
           </div>
-          <div>
-            <h1 className="font-bold text-base tracking-wide text-white flex items-center gap-1.5">
-              K8s<span className="text-cyan-400">Pulse</span>
-            </h1>
-            <p className="text-[10px] text-slate-400 font-mono tracking-wider uppercase">Cluster Observability</p>
-          </div>
+          <button onClick={() => setSidebarOpen(false)} className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800" aria-label="Close menu">
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Active Cluster Badge */}
+        {/* Active cluster */}
         <div className="p-3 border-b border-slate-800/60">
           <div className="px-3 py-2 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="font-medium text-slate-200 truncate max-w-[110px]">
-                {overview?.cluster_name ?? 'Loading cluster...'}
-              </span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${clusterError ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`} />
+              <span className="font-medium text-slate-200 truncate">{overview?.cluster_name ?? (clusterError ? 'Unreachable' : 'Connecting…')}</span>
             </div>
-            <span className="text-[10px] bg-blue-950 text-blue-300 px-1.5 py-0.5 rounded border border-blue-800">
+            <span className="text-[10px] bg-blue-950 text-blue-300 px-1.5 py-0.5 rounded border border-blue-800 flex-shrink-0">
               {overview?.server_version ?? '—'}
             </span>
           </div>
         </div>
 
-        {/* Navigation items */}
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -248,11 +310,11 @@ function Dashboard({ user }: { user: AuthUser }) {
             return (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id as any)}
+                onClick={() => navigate(item.id)}
                 className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-all duration-150 ${
                   isActive
                     ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 shadow-sm shadow-cyan-500/10'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent'
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -261,12 +323,12 @@ function Dashboard({ user }: { user: AuthUser }) {
                 </div>
                 {item.count && (
                   <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+                    className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
                       isActive
                         ? 'bg-cyan-500/20 text-cyan-300'
-                        : item.id === 'alerts'
+                        : item.tone === 'alert'
                         ? 'bg-rose-950/80 text-rose-400 border border-rose-800/40'
-                        : item.id === 'ai'
+                        : item.tone === 'ai'
                         ? 'bg-purple-950/80 text-purple-300 border border-purple-800/40'
                         : 'bg-slate-800 text-slate-400'
                     }`}
@@ -279,14 +341,13 @@ function Dashboard({ user }: { user: AuthUser }) {
           })}
         </nav>
 
-        {/* System Footnote */}
         <div className="p-3 border-t border-slate-800/80 text-[11px] text-slate-500 space-y-1 bg-slate-950/40">
           <div className="flex justify-between">
-            <span>FastAPI Server:</span>
+            <span>API server</span>
             <span className="font-mono text-slate-400">v{healthData?.version || '1.0.0'}</span>
           </div>
           <div className="flex justify-between">
-            <span>Namespaces:</span>
+            <span>Namespaces</span>
             <span className="font-mono text-cyan-400">{namespaces.length}</span>
           </div>
           {user.username !== 'local' && (
@@ -302,23 +363,29 @@ function Dashboard({ user }: { user: AuthUser }) {
         </div>
       </aside>
 
-      {/* MAIN VIEWPORT */}
+      {/* MAIN */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* TOPBAR */}
-        <header className="h-16 border-b border-slate-800/80 bg-[#0E1322]/80 backdrop-blur-md px-6 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-4">
-            <div className="relative">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-              <input
-                type="text"
-                placeholder="Global cluster search..."
-                className="pl-9 pr-4 py-1.5 w-72 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
-              />
-            </div>
+        <header className="h-16 border-b border-slate-800/80 bg-[#0E1322]/80 px-3 sm:px-6 flex items-center justify-between gap-3 flex-shrink-0">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0 flex-1">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="lg:hidden p-2 rounded-lg bg-slate-800/80 text-slate-300 border border-slate-700/50"
+              aria-label="Open menu"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setPaletteOpen(true)}
+              className="flex items-center gap-2 pl-3 pr-2 py-1.5 w-full max-w-72 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-500 hover:border-slate-600 hover:text-slate-300 transition-colors"
+            >
+              <Search className="w-4 h-4 flex-shrink-0" />
+              <span className="flex-1 text-left truncate">Search cluster…</span>
+              <kbd className="hidden sm:inline text-[10px] font-mono border border-slate-700 rounded px-1.5 py-0.5">Ctrl K</kbd>
+            </button>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 text-xs text-slate-400">
+          <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
+            <div className="hidden md:flex items-center gap-2 text-xs text-slate-400">
               <Clock className="w-3.5 h-3.5 text-slate-500" />
               <span className="font-mono text-[11px]">
                 {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -329,74 +396,98 @@ function Dashboard({ user }: { user: AuthUser }) {
               onClick={loadAllData}
               disabled={isLoading}
               className="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition-colors border border-slate-700/50"
-              title="Refresh all metrics"
+              title="Refresh now"
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-cyan-400' : ''}`} />
             </button>
 
-            <div>
-              {backendError ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-rose-950/80 text-rose-300 border border-rose-800">
-                  <XCircle className="w-3.5 h-3.5" /> Backend Disconnected
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-950/80 text-emerald-400 border border-emerald-800">
-                  <ShieldCheck className="w-3.5 h-3.5" /> Cluster Connected
-                </span>
-              )}
-            </div>
+            {backendError ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full text-xs font-medium bg-rose-950/80 text-rose-300 border border-rose-800">
+                <XCircle className="w-3.5 h-3.5" /> <span className="hidden sm:inline">API offline</span>
+              </span>
+            ) : clusterError ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full text-xs font-medium bg-rose-950/80 text-rose-300 border border-rose-800">
+                <WifiOff className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Cluster unreachable</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full text-xs font-medium bg-emerald-950/80 text-emerald-400 border border-emerald-800">
+                <ShieldCheck className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Cluster connected</span>
+              </span>
+            )}
           </div>
         </header>
 
-        {/* TAB VIEW ROUTER */}
-        <div className="flex-1 overflow-y-auto p-6">
-          {activeTab === 'overview' && (
-            <OverviewTab
-              overview={overview}
-              metrics={metrics}
-              health={healthData}
-              k8sHealth={k8sHealth}
-              promHealth={promHealth}
-              dbHealth={dbHealth}
-              events={events}
-              onNavigate={(tab) => setActiveTab(tab)}
-            />
+        <div className="flex-1 overflow-y-auto p-3 sm:p-6">
+          {(backendError || clusterError) && (
+            <div className="mb-5 p-4 rounded-xl bg-rose-950/30 border border-rose-900/60 flex items-start gap-3 text-xs text-rose-200">
+              <WifiOff className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-rose-100">{backendError ? 'Cannot reach the K8sPulse API' : 'Cannot reach the Kubernetes cluster'}</p>
+                <p className="mt-0.5 text-rose-300/90">
+                  {backendError ?? clusterError} The data below is from the last successful refresh and retries every {REFRESH_MS / 1000}s.
+                </p>
+              </div>
+            </div>
           )}
 
-          {activeTab === 'nodes' && <NodesTab nodes={nodes} />}
+          <Suspense fallback={<TabFallback />}>
+            {activeTab === 'overview' && (
+              <OverviewTab
+                overview={overview}
+                metrics={metrics}
+                health={healthData}
+                k8sHealth={k8sHealth}
+                promHealth={promHealth}
+                dbHealth={dbHealth}
+                events={events}
+                onNavigate={(tab) => navigate(tab)}
+              />
+            )}
 
-          {activeTab === 'pods' && (
-            <PodsTab
-              pods={pods}
-              namespaces={namespaces.map((n) => n.name)}
-              onOpenLogs={handleOpenLogs}
-              onAnalyzeAI={handleAnalyzeAI}
-            />
-          )}
+            {activeTab === 'nodes' && <NodesTab nodes={nodes} initialSearch={tabSearch('nodes')} />}
 
-          {activeTab === 'deployments' && (
-            <DeploymentsTab deployments={deployments} services={services} />
-          )}
+            {activeTab === 'pods' && (
+              <PodsTab
+                pods={pods}
+                namespaces={namespaces.map((n) => n.name)}
+                onOpenLogs={handleOpenLogs}
+                onAnalyzeAI={handleAnalyzeAI}
+                initialSearch={tabSearch('pods')}
+              />
+            )}
 
-          {activeTab === 'logs' && (
-            <LogsTab
-              pods={pods}
-              initialNamespace={logTarget?.namespace}
-              initialPod={logTarget?.podName}
-            />
-          )}
+            {activeTab === 'deployments' && (
+              <DeploymentsTab
+                deployments={deployments}
+                services={services}
+                initialSearch={tabSearch('deployments')}
+                initialView={searchTarget?.tab === 'deployments' ? searchTarget.view : undefined}
+              />
+            )}
 
-          {activeTab === 'alerts' && (
-            <AlertsTab
-              rules={alertRules}
-              events={alertEvents}
-              onRefresh={loadAllData}
-            />
-          )}
+            {activeTab === 'logs' && (
+              <LogsTab pods={pods} initialNamespace={logTarget?.namespace} initialPod={logTarget?.podName} />
+            )}
 
-          {activeTab === 'ai' && <AITab incidentTarget={incidentTarget} onIncidentHandled={() => setIncidentTarget(null)} />}
+            {activeTab === 'alerts' && <AlertsTab rules={alertRules} events={alertEvents} onRefresh={loadAllData} />}
+
+            {activeTab === 'ai' && (
+              <AITab pods={pods} incidentTarget={incidentTarget} onIncidentHandled={() => setIncidentTarget(null)} />
+            )}
+          </Suspense>
         </div>
       </main>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onSelect={handleSearchSelect}
+        pods={pods}
+        deployments={deployments}
+        services={services}
+        nodes={nodes}
+        namespaces={namespaces}
+      />
     </div>
   );
 }

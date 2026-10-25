@@ -53,6 +53,22 @@ async def test_cluster_endpoints():
 
 
 @pytest.mark.asyncio
+async def test_unreachable_cluster_returns_503_without_sample_data(monkeypatch):
+    from app.core.config import settings
+
+    # With sample data disabled (the production default) an outage must surface, not be masked
+    monkeypatch.setattr(settings, "DEMO_DATA", False)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        for path in ("overview", "nodes", "pods", "deployments", "services", "events"):
+            r = await ac.get(f"/api/cluster/{path}")
+            assert r.status_code == 503, path
+            assert "not reachable" in r.json()["detail"]
+        r_logs = await ac.get("/api/cluster/logs", params={"namespace": "default", "pod_name": "x"})
+        assert r_logs.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_metrics_endpoint():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

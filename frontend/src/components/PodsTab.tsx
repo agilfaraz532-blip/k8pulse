@@ -1,19 +1,28 @@
-import { useState } from 'react';
-import { Box, Search, CheckCircle2, AlertCircle, XCircle, X, Terminal, Bot } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Box, Search, X, Terminal, Bot } from 'lucide-react';
 import { PodInfo } from '../types';
+import { StatusBadge, needsAttention } from './status';
 
 interface PodsTabProps {
   pods: PodInfo[];
   namespaces: string[];
   onOpenLogs: (namespace: string, podName: string) => void;
   onAnalyzeAI: (namespace: string, podName: string) => void;
+  /** Pre-filled search from the global search palette */
+  initialSearch?: string;
 }
 
-export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI }: PodsTabProps) {
-  const [searchTerm, setSearchTerm] = useState('');
+export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI, initialSearch }: PodsTabProps) {
+  const [searchTerm, setSearchTerm] = useState(initialSearch ?? '');
+
+  useEffect(() => {
+    if (initialSearch !== undefined) setSearchTerm(initialSearch);
+  }, [initialSearch]);
   const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [selectedPod, setSelectedPod] = useState<PodInfo | null>(null);
+
+  const statuses = [...new Set(pods.map((p) => p.status))].sort();
 
   const filteredPods = pods.filter((p) => {
     const matchesSearch =
@@ -24,36 +33,6 @@ export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI }: PodsTabPr
     const matchesStatus = selectedStatus === 'all' || p.status === selectedStatus;
     return matchesSearch && matchesNs && matchesStatus;
   });
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'Running':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-sans font-medium bg-emerald-950/80 text-emerald-400 border border-emerald-800/50">
-            <CheckCircle2 className="w-3 h-3" /> Running
-          </span>
-        );
-      case 'CrashLoopBackOff':
-      case 'Failed':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-sans font-medium bg-rose-950/80 text-rose-400 border border-rose-800/50 animate-pulse">
-            <XCircle className="w-3 h-3" /> {status}
-          </span>
-        );
-      case 'Pending':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-sans font-medium bg-amber-950/80 text-amber-400 border border-amber-800/50">
-            <AlertCircle className="w-3 h-3" /> Pending
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-sans font-medium bg-slate-800 text-slate-300">
-            {status}
-          </span>
-        );
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -88,20 +67,22 @@ export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI }: PodsTabPr
             className="px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-cyan-500"
           >
             <option value="all">All Statuses</option>
-            <option value="Running">Running</option>
-            <option value="CrashLoopBackOff">CrashLoopBackOff</option>
-            <option value="Pending">Pending</option>
+            {statuses.map((st) => (
+              <option key={st} value={st}>
+                {st}
+              </option>
+            ))}
           </select>
 
           {/* Search Box */}
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
-              placeholder="Search pod or node..."
+              placeholder="Search pod, namespace or node..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 pr-4 py-2 w-64 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+              className="pl-9 pr-4 py-2 w-full sm:w-64 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
             />
           </div>
         </div>
@@ -136,7 +117,7 @@ export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI }: PodsTabPr
                     <span className="truncate max-w-[220px]">{pod.name}</span>
                   </td>
                   <td className="px-4 py-4 text-blue-400">{pod.namespace}</td>
-                  <td className="px-4 py-4">{getStatusBadge(pod.status)}</td>
+                  <td className="px-4 py-4"><StatusBadge status={pod.status} /></td>
                   <td className="px-4 py-4 text-slate-300">{pod.ready}</td>
                   <td className="px-4 py-4">
                     <span
@@ -151,10 +132,10 @@ export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI }: PodsTabPr
                       {pod.restarts}
                     </span>
                   </td>
-                  <td className="px-4 py-4 text-slate-400">{pod.node_name || '—'}</td>
+                  <td className="px-4 py-4 text-slate-400 whitespace-nowrap">{pod.node_name || '—'}</td>
                   <td className="px-4 py-4 text-slate-400">{pod.pod_ip || '—'}</td>
                   <td className="px-4 py-4 text-slate-400 font-sans text-[11px]">{pod.age}</td>
-                  <td className="px-4 py-4 text-right space-x-2">
+                  <td className="px-4 py-4 text-right whitespace-nowrap space-x-2">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -165,7 +146,7 @@ export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI }: PodsTabPr
                     >
                       <Terminal className="w-3 h-3" /> Logs
                     </button>
-                    {pod.status !== 'Running' && (
+                    {needsAttention(pod) && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -227,6 +208,12 @@ export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI }: PodsTabPr
                     {c.reason && (
                       <p className="text-[11px] font-mono text-rose-400 bg-rose-950/40 p-1.5 rounded border border-rose-900/50">
                         Reason: {c.reason}
+                      </p>
+                    )}
+                    {c.last_termination_reason && (
+                      <p className="text-[11px] font-mono text-amber-300 bg-amber-950/30 p-1.5 rounded border border-amber-900/50">
+                        Last run ended: {c.last_termination_reason}
+                        {c.last_exit_code !== undefined && c.last_exit_code !== null && ` (exit code ${c.last_exit_code})`}
                       </p>
                     )}
                   </div>

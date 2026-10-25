@@ -97,93 +97,6 @@ export function OverviewTab({
 
   return (
     <div className="space-y-6">
-      {/* Subsystem Connectivity Matrix */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-            <Activity className="w-4 h-4 text-cyan-400" /> Subsystem Connectivity & Probes
-          </h2>
-          <span className="text-[11px] text-slate-500 font-mono">Live Polling • 10s</span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
-                  <Terminal className="w-4 h-4 text-cyan-400" /> FastAPI Core
-                </span>
-                {getStatusBadge(health ? 'healthy' : 'unavailable')}
-              </div>
-              <p className="text-[11px] text-slate-400">REST Gateway with Swagger Docs</p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
-              <span>UPTIME: {health?.uptime_seconds ?? 0}s</span>
-              <a
-                href="http://localhost:8000/docs"
-                target="_blank"
-                rel="noreferrer"
-                className="text-cyan-400 hover:underline flex items-center gap-1"
-              >
-                /docs <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
-                  <Radio className="w-4 h-4 text-blue-400" /> Kubernetes API
-                </span>
-                {getStatusBadge(k8sHealth?.status)}
-              </div>
-              <p className="text-[11px] text-slate-400 truncate" title={k8sHealth?.message}>
-                {k8sHealth?.message || 'Cluster state operational'}
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
-              <span>NODE PROBES</span>
-              <span className="text-slate-300">{overview?.server_version ?? '—'}</span>
-            </div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
-                  <Cpu className="w-4 h-4 text-amber-400" /> Prometheus TSDB
-                </span>
-                {getStatusBadge(promHealth?.status)}
-              </div>
-              <p className="text-[11px] text-slate-400 truncate" title={promHealth?.url}>
-                {promHealth?.message || 'PromQL Metric Collector'}
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
-              <span className="truncate max-w-[130px]">{promHealth?.url || 'http://localhost:9090'}</span>
-              <span className="text-amber-400">PromQL</span>
-            </div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
-                  <Database className="w-4 h-4 text-purple-400" /> Database Pool
-                </span>
-                {getStatusBadge(dbHealth?.status)}
-              </div>
-              <p className="text-[11px] text-slate-400">Users, alert rules & audit logs</p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
-              <span className="uppercase">{dbHealth?.type || 'SQLite / Postgres'}</span>
-              <span className="text-purple-400">Async Pool</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
       {/* Cluster KPI Resource Overview */}
       <div>
         <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
@@ -384,6 +297,93 @@ export function OverviewTab({
             </ResponsiveContainer>
           </div>
           )}
+        </div>
+      </div>
+
+      {/* Subsystem Connectivity Matrix */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+            <Activity className="w-4 h-4 text-cyan-400" /> Subsystem Connectivity & Probes
+          </h2>
+          <span className="text-[11px] text-slate-500 font-mono">Live Polling • 10s</span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
+                  <Terminal className="w-4 h-4 text-cyan-400" /> FastAPI Core
+                </span>
+                {getStatusBadge(health ? 'healthy' : 'unavailable')}
+              </div>
+              <p className="text-[11px] text-slate-400">REST Gateway with Swagger Docs</p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+              <span>UPTIME: {health?.uptime_seconds ?? 0}s</span>
+              <a
+                href="/docs"
+                target="_blank"
+                rel="noreferrer"
+                className="text-cyan-400 hover:underline flex items-center gap-1"
+              >
+                /docs <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
+                  <Radio className="w-4 h-4 text-blue-400" /> Kubernetes API
+                </span>
+                {getStatusBadge(k8sHealth?.status)}
+              </div>
+              <p className="text-[11px] text-slate-400 truncate" title={k8sHealth?.message}>
+                {k8sHealth?.message || 'Cluster state operational'}
+              </p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+              <span>NODE PROBES</span>
+              <span className="text-slate-300">{overview?.server_version ?? '—'}</span>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
+                  <Cpu className="w-4 h-4 text-amber-400" /> Prometheus TSDB
+                </span>
+                {getStatusBadge(promHealth?.status)}
+              </div>
+              <p className="text-[11px] text-slate-400 truncate" title={promHealth?.url}>
+                {promHealth?.message || 'PromQL Metric Collector'}
+              </p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+              <span className="truncate max-w-[130px]">{promHealth?.url || 'http://localhost:9090'}</span>
+              <span className="text-amber-400">PromQL</span>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-slate-300 flex items-center gap-2">
+                  <Database className="w-4 h-4 text-purple-400" /> Database Pool
+                </span>
+                {getStatusBadge(dbHealth?.status)}
+              </div>
+              <p className="text-[11px] text-slate-400">Users, alert rules & audit logs</p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+              <span className="uppercase">{dbHealth?.type || 'SQLite / Postgres'}</span>
+              <span className="text-purple-400">Async Pool</span>
+            </div>
+          </div>
         </div>
       </div>
 

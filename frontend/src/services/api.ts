@@ -149,11 +149,18 @@ export async function fetchEvents(namespace?: string): Promise<EventInfo[]> {
   return handleResponse<EventInfo[]>(await authFetch(url));
 }
 
-export async function fetchPodLogs(namespace: string, podName: string, containerName?: string, tailLines: number = 100): Promise<PodLogsResponse> {
+export async function fetchPodLogs(
+  namespace: string,
+  podName: string,
+  containerName?: string,
+  tailLines: number = 100,
+  previous: boolean = false,
+): Promise<PodLogsResponse> {
   let url = `${API_BASE}/cluster/logs?namespace=${encodeURIComponent(namespace)}&pod_name=${encodeURIComponent(podName)}&tail_lines=${tailLines}`;
   if (containerName) {
     url += `&container_name=${encodeURIComponent(containerName)}`;
   }
+  if (previous) url += '&previous=true';
   return handleResponse<PodLogsResponse>(await authFetch(url));
 }
 

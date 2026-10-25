@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     K8S_REQUEST_TIMEOUT: int = 10
     # Set to host.docker.internal when running in Docker against a cluster on the host's 127.0.0.1
     K8S_API_HOST_OVERRIDE: str = ""
+    # Serve built-in sample cluster data when no cluster is reachable (tests / offline UI work only).
+    # Off by default so an outage is reported instead of being hidden behind fake data.
+    DEMO_DATA: bool = False
 
     # Prometheus
     PROMETHEUS_URL: str = "http://localhost:9090"

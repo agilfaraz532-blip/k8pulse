@@ -63,11 +63,13 @@ async def get_pod_logs(
     pod_name: str = Query(..., description="Pod name"),
     container_name: Optional[str] = Query(None, description="Target container name"),
     tail_lines: int = Query(100, ge=1, le=1000, description="Number of lines to tail"),
+    previous: bool = Query(False, description="Logs from the previous (crashed) container run"),
 ):
-    """Retrieve or stream application logs for a given pod and container."""
+    """Retrieve application logs for a given pod and container."""
     return k8s_service.get_pod_logs(
         namespace=namespace,
         pod_name=pod_name,
         container_name=container_name,
         tail_lines=tail_lines,
+        previous=previous,
     )

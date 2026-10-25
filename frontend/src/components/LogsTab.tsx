@@ -6,6 +6,8 @@ import {
   Pause,
   Play,
   Terminal,
+  History,
+  AlertTriangle,
 } from 'lucide-react';
 import { PodInfo, PodLogsResponse } from '../types';
 import { fetchPodLogs } from '../services/api';
@@ -24,18 +26,29 @@ export function LogsTab({ pods, initialNamespace, initialPod }: LogsTabProps) {
   const [filterText, setFilterText] = useState<string>('');
   const [logsData, setLogsData] = useState<PodLogsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  // Logs of the last crashed run: where the real error usually is for crash-looping pods
+  const [previous, setPrevious] = useState<boolean>(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   const availablePods = pods.filter((p) => p.namespace === selectedNamespace);
+  const selectedPod = availablePods.find((p) => p.name === selectedPodName);
 
   const loadLogs = async () => {
     if (!selectedPodName) return;
     setLoading(true);
     try {
-      const data = await fetchPodLogs(selectedNamespace, selectedPodName, undefined, tailLines);
+      const data = await fetchPodLogs(selectedNamespace, selectedPodName, undefined, tailLines, previous);
       setLogsData(data);
+      setError(null);
     } catch (err) {
-      console.error(err);
+      setLogsData(null);
+      const message = (err as Error).message || 'Could not load logs';
+      setError(
+        previous && message.includes('previous terminated container')
+          ? 'This container has not crashed or restarted yet, so there is no previous run to show.'
+          : message,
+      );
     } finally {
       setLoading(false);
     }
@@ -50,13 +63,14 @@ export function LogsTab({ pods, initialNamespace, initialPod }: LogsTabProps) {
 
   useEffect(() => {
     loadLogs();
-  }, [selectedNamespace, selectedPodName, tailLines]);
+  }, [selectedNamespace, selectedPodName, tailLines, previous]);
 
   useEffect(() => {
-    if (!isLive) return;
+    // A previous run's logs never change, so there is nothing to stream
+    if (!isLive || previous) return;
     const interval = setInterval(loadLogs, 3000);
     return () => clearInterval(interval);
-  }, [isLive, selectedNamespace, selectedPodName, tailLines]);
+  }, [isLive, selectedNamespace, selectedPodName, tailLines, previous]);
 
   useEffect(() => {
     if (isLive && logContainerRef.current) {
@@ -93,7 +107,7 @@ export function LogsTab({ pods, initialNamespace, initialPod }: LogsTabProps) {
   };
 
   return (
-    <div className="space-y-4 h-[calc(100vh-140px)] flex flex-col">
+    <div className="space-y-4 h-[calc(100dvh-140px)] min-h-[480px] flex flex-col">
       {/* Controls Bar */}
       <div className="p-4 rounded-xl bg-[#111827] border border-slate-800 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3 flex-wrap">
@@ -155,9 +169,26 @@ export function LogsTab({ pods, initialNamespace, initialPod }: LogsTabProps) {
               placeholder="Search in log lines..."
               value={filterText}
               onChange={(e) => setFilterText(e.target.value)}
-              className="pl-8 pr-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 w-48"
+              className="pl-8 pr-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 w-full sm:w-48"
             />
           </div>
+
+          {/* Previous (crashed) run toggle */}
+          <button
+            onClick={() => setPrevious(!previous)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${
+              previous
+                ? 'bg-amber-950 text-amber-300 border border-amber-800'
+                : 'bg-slate-800 text-slate-400 hover:text-white'
+            }`}
+            title="Show logs from the previous container run (use this for crash-looping pods)"
+          >
+            <History className="w-3.5 h-3.5" />
+            {previous ? 'Previous run' : 'Current run'}
+            {!previous && selectedPod && selectedPod.restarts > 0 && (
+              <span className="ml-0.5 px-1 rounded bg-amber-900/70 text-amber-300 text-[10px]">{selectedPod.restarts}↻</span>
+            )}
+          </button>
 
           {/* Live Stream Toggle */}
           <button
@@ -169,7 +200,7 @@ export function LogsTab({ pods, initialNamespace, initialPod }: LogsTabProps) {
             }`}
           >
             {isLive ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-            {isLive ? 'Live Streaming' : 'Paused'}
+            {isLive && !previous ? 'Live' : 'Paused'}
           </button>
 
           {/* Manual Refresh */}
@@ -202,11 +233,19 @@ export function LogsTab({ pods, initialNamespace, initialPod }: LogsTabProps) {
               {selectedNamespace} / <span className="text-white">{selectedPodName}</span>
             </span>
           </div>
-          <span>Showing {filteredLines.length} lines</span>
+          <span>
+            {previous && <span className="text-amber-400 mr-2">previous run ·</span>}
+            Showing {filteredLines.length} lines
+          </span>
         </div>
 
         <div ref={logContainerRef} className="flex-1 p-4 overflow-y-auto space-y-1 select-text">
-          {filteredLines.length > 0 ? (
+          {error ? (
+            <div className="flex items-start gap-2 text-amber-300 bg-amber-950/30 border border-amber-900/50 rounded-lg p-3 font-sans">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          ) : filteredLines.length > 0 ? (
             filteredLines.map((line, idx) => (
               <div key={idx} className={`px-2 py-0.5 rounded leading-relaxed transition-colors ${getLineColor(line)}`}>
                 <span className="text-slate-600 select-none mr-3">{idx + 1}</span>
@@ -215,7 +254,7 @@ export function LogsTab({ pods, initialNamespace, initialPod }: LogsTabProps) {
             ))
           ) : (
             <div className="text-slate-500 italic text-center py-10">
-              {loading ? 'Fetching logs...' : 'No log lines match the current filter.'}
+              {loading ? 'Fetching logs...' : filterText ? 'No log lines match the current filter.' : 'This container has not written any log output yet.'}
             </div>
           )}
         </div>

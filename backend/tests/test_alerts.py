@@ -87,3 +87,35 @@ async def test_engine_respects_duration(fake_cluster):
 async def test_no_events_without_cluster(monkeypatch):
     monkeypatch.setattr(k8s_service, "is_connected", False)
     assert await alert_engine.evaluate_once() == 0
+
+
+def test_crash_loop_detection_holds_between_restarts():
+    """A crashing pod is briefly 'Running' between back-offs; the alert must not flap closed."""
+    import datetime
+    from app.schemas.k8s import ContainerStatusInfo, PodInfo
+    from app.services.alerting import _is_crash_looping
+
+    def pod(status, *, restarts=0, exit_code=None, ended_minutes_ago=None, reason=None):
+        ended = (
+            (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=ended_minutes_ago)).isoformat()
+            if ended_minutes_ago is not None else None
+        )
+        return PodInfo(
+            name="p", namespace="demo", status=status, ready="0/1", restarts=restarts, age="5m",
+            created_at="", labels={},
+            containers=[ContainerStatusInfo(
+                name="c", image="busybox", ready=False, restart_count=restarts, state="Running",
+                reason=reason, last_termination_reason="Error" if exit_code else None,
+                last_exit_code=exit_code, last_termination_at=ended,
+            )],
+        )
+
+    assert _is_crash_looping(pod("Error"))
+    assert _is_crash_looping(pod("OOMKilled"))
+    assert _is_crash_looping(pod("Running", reason="CrashLoopBackOff"))
+    # Running between restarts, crashed 2 minutes ago -> still crash-looping
+    assert _is_crash_looping(pod("Running", restarts=5, exit_code=1, ended_minutes_ago=2))
+    # Old restart (e.g. node reboot days ago) -> healthy
+    assert not _is_crash_looping(pod("Running", restarts=5, exit_code=1, ended_minutes_ago=600))
+    # Clean exit is not a crash
+    assert not _is_crash_looping(pod("Running", restarts=5, exit_code=0, ended_minutes_ago=2))

@@ -1,5 +1,6 @@
 """
-Test environment: isolated SQLite database, no live cluster/Prometheus, auth disabled by default.
+Test environment: isolated SQLite database, no live cluster/Prometheus (built-in sample
+cluster data), auth disabled by default.
 Environment variables take precedence over backend/.env in pydantic-settings, so they must be
 set before any app module is imported.
 """
@@ -12,6 +13,7 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmpdir}/test.db"
 os.environ["AUTH_ENABLED"] = "false"
 os.environ["KUBECONFIG_PATH"] = os.path.join(_tmpdir, "missing-kubeconfig")
 os.environ["K8S_IN_CLUSTER"] = "false"
+os.environ["DEMO_DATA"] = "true"
 os.environ["PROMETHEUS_URL"] = "http://127.0.0.1:9"
 os.environ["PROMETHEUS_TIMEOUT"] = "1"
 os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"

@@ -6,8 +6,8 @@ Changing the variables later does not change an existing account's password.
 - To reset it, delete the user row (`docker exec -it k8spulse-postgres psql -U postgres k8spulse_db -c "delete from users where username='admin';"`) and restart the backend.
 - For local development, set `AUTH_ENABLED=false`.
 
-### "Kubernetes: unavailable" / the dashboard shows demo data
-No kubeconfig could be loaded. Check the backend logs (`docker logs k8spulse-backend`):
+### "Cannot reach the Kubernetes cluster" banner / cluster endpoints return 503
+No kubeconfig could be loaded, or the API server is down. Check the backend logs (`docker logs k8spulse-backend`):
 - **Docker Compose:** `~/.kube/config` must exist on the host (or set `KUBECONFIG_HOST_PATH`).
 - **API server on `127.0.0.1`:** look for `Kubernetes API host rewritten to https://host.docker.internal:<port>`.
 - **TLS errors:** the API server certificate must include `localhost` in its SANs. Docker Desktop, kind and minikube do.

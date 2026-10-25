@@ -32,12 +32,14 @@ Without a valid token they return `401`.
 |---|---|
 | `GET /cluster/overview` | Counts, CPU/memory (`usage_source`: `metrics-server` or `requests`), total restarts |
 | `GET /cluster/nodes` | Nodes with capacity, conditions, taints, and pod count per node |
-| `GET /cluster/pods?namespace=` | Pods with status, restarts, age, and live CPU/memory |
+| `GET /cluster/pods?namespace=` | Pods with kubectl-style status, restarts, age, live CPU/memory, and per-container last termination reason / exit code / time |
 | `GET /cluster/deployments?namespace=` | Deployments |
 | `GET /cluster/services?namespace=` | Services |
 | `GET /cluster/namespaces` | Namespaces with pod and service counts |
 | `GET /cluster/events?namespace=` | The 50 most recent events |
-| `GET /cluster/logs?namespace=&pod_name=&container_name=&tail_lines=` | Pod logs |
+| `GET /cluster/logs?namespace=&pod_name=&container_name=&tail_lines=&previous=` | Pod logs; `previous=true` returns the last terminated run (crash loops) |
+
+All `/cluster/*` endpoints return `503 {"detail": "..."}` when the Kubernetes API is unreachable.
 
 ## Metrics
 

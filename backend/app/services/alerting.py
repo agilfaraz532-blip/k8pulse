@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.kubernetes.client import k8s_service
+from app.kubernetes.client import KubernetesClientService, k8s_service
 from app.models.database import AlertEvent, AlertRule, AsyncSessionLocal
 
 METRIC_TYPES = ("cpu_percent", "memory_percent", "pod_restarts", "crashloop", "node_unready")
@@ -43,6 +43,28 @@ def _compare(value: float, condition: str, threshold: float) -> bool:
     return value > threshold
 
 
+# A pod that crashed this recently is still crash-looping even if it is briefly "Running" between
+# back-offs; without this window the alert would resolve and re-open on every restart.
+CRASH_LOOP_WINDOW = datetime.timedelta(minutes=10)
+_FAILING_STATUSES = {"CrashLoopBackOff", "Error", "OOMKilled"} | KubernetesClientService.UNHEALTHY_WAITING_REASONS
+
+
+def _is_crash_looping(pod) -> bool:
+    if pod.status in _FAILING_STATUSES:
+        return True
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for c in pod.containers:
+        if c.reason in KubernetesClientService.UNHEALTHY_WAITING_REASONS:
+            return True
+        if c.last_termination_at and c.last_exit_code not in (None, 0) and c.restart_count >= 2:
+            ended = datetime.datetime.fromisoformat(c.last_termination_at)
+            if ended.tzinfo is None:
+                ended = ended.replace(tzinfo=datetime.timezone.utc)
+            if now - ended < CRASH_LOOP_WINDOW:
+                return True
+    return False
+
+
 def collect_measurements() -> Dict[str, List[Measurement]]:
     """Reads the cluster once and returns current values for every supported metric type."""
     overview = k8s_service.get_cluster_overview()
@@ -60,10 +82,13 @@ def collect_measurements() -> Dict[str, List[Measurement]]:
         "pod_restarts": [(f"pod:{p.namespace}/{p.name}", float(p.restarts),
                           f"Pod {p.namespace}/{p.name} has restarted {p.restarts} times") for p in pods],
         "crashloop": [(f"pod:{p.namespace}/{p.name}",
-                       1.0 if p.status == "CrashLoopBackOff" or any(
-                           c.reason in k8s_service.UNHEALTHY_WAITING_REASONS for c in p.containers) else 0.0,
+                       1.0 if _is_crash_looping(p) else 0.0,
                        f"Pod {p.namespace}/{p.name} is failing ({p.status}; "
-                       + ", ".join(f"{c.name}: {c.reason}" for c in p.containers if c.reason) + ")")
+                       + ", ".join(
+                           f"{c.name}: {c.reason or 'restarting'}"
+                           + (f", last exit {c.last_termination_reason}" if c.last_termination_reason else "")
+                           for c in p.containers if c.reason or c.last_termination_reason
+                       ) + ")")
                       for p in pods],
         "node_unready": [(f"node:{n.name}", 0.0 if n.status == "Ready" else 1.0,
                           f"Node {n.name} is {n.status}") for n in nodes],

@@ -29,4 +29,11 @@ server {
         proxy_read_timeout 360s;
         proxy_send_timeout 360s;
     }
+
+    # Interactive API docs (Swagger UI) served by the backend
+    location ~ ^/(docs|redoc|openapi\.json)$ {
+        set $backend_upstream http://${BACKEND_UPSTREAM};
+        proxy_pass $backend_upstream;
+        proxy_set_header Host $host;
+    }
 }

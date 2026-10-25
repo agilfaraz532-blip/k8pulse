@@ -165,8 +165,15 @@ class GeminiAIService:
         restarting_pods = sorted((p for p in k8s_service.get_pods() if p.restarts > 0), key=lambda p: -p.restarts)
 
         def pod_line(p) -> str:
-            reasons = ", ".join(f"{c.name}:{c.state}{'/' + c.reason if c.reason else ''}" for c in p.containers)
+            reasons = ", ".join(
+                f"{c.name}:{c.state}{'/' + c.reason if c.reason else ''}"
+                f"{' last-exit=' + c.last_termination_reason if c.last_termination_reason else ''}"
+                for c in p.containers
+            )
             return f"{p.namespace}/{p.name} status={p.status} ready={p.ready} restarts={p.restarts} [{reasons}]"
+
+        live_usage = overview.usage_source == "metrics-server"
+        usage_kind = "in use (live, metrics-server)" if live_usage else "requested (no live metrics available)"
 
         prompt = f"""
 You are a Principal Kubernetes Site Reliability Engineer (SRE).
@@ -177,9 +184,8 @@ Cluster: {overview.cluster_name} (Kubernetes {overview.server_version}), status 
 Nodes: {overview.ready_nodes}/{overview.node_count} Ready
 Pods: {overview.running_pods}/{overview.pod_count} Running, {overview.failed_pods} unhealthy
 Deployments: {overview.deployment_count}, Services: {overview.service_count}, Namespaces: {overview.namespace_count}
-CPU requested: {overview.cpu_cores_used}/{overview.cpu_cores_total} cores ({overview.cpu_percent}%)
-Memory requested: {overview.memory_bytes_used}/{overview.memory_bytes_total} GiB ({overview.memory_percent}%)
-(CPU/memory are resource requests vs allocatable, not live usage.)
+CPU {usage_kind}: {overview.cpu_cores_used}/{overview.cpu_cores_total} cores ({overview.cpu_percent}%)
+Memory {usage_kind}: {overview.memory_bytes_used}/{overview.memory_bytes_total} GiB ({overview.memory_percent}%)
 Total container restarts: {overview.restart_count_24h}
 
 Pods not Running ({len(unhealthy_pods)}):
@@ -204,7 +210,8 @@ Put each kubectl command in backticks.
             summary=(
                 f"{overview.ready_nodes}/{overview.node_count} nodes Ready, {overview.running_pods}/{overview.pod_count} pods Running, "
                 f"{overview.failed_pods} unhealthy, {len(warning_events)} warning events. "
-                f"CPU requested {overview.cpu_percent}%, memory requested {overview.memory_percent}%."
+                f"CPU {'used' if live_usage else 'requested'} {overview.cpu_percent}%, "
+                f"memory {'used' if live_usage else 'requested'} {overview.memory_percent}%."
             ),
             root_cause_analysis="",
             recommendations=[],
@@ -220,21 +227,32 @@ Put each kubectl command in backticks.
         if pod is None:
             raise AIUnavailableError(f"Pod {req.namespace}/{req.pod_name} was not found in the cluster.")
 
-        try:
-            logs = k8s_service.get_pod_logs(
-                namespace=req.namespace,
-                pod_name=req.pod_name,
-                container_name=req.container_name,
-                tail_lines=req.tail_lines,
-            ).logs[-15:]
-            logs_text = "\n".join(_clip(_TIMESTAMP_RE.sub("", line), 200) for line in logs) or "(no log output)"
-        except Exception as exc:
-            logs_text = f"(logs unavailable: {exc})"
+        def read_logs(previous: bool) -> str:
+            try:
+                logs = k8s_service.get_pod_logs(
+                    namespace=req.namespace,
+                    pod_name=req.pod_name,
+                    container_name=req.container_name,
+                    tail_lines=req.tail_lines,
+                    previous=previous,
+                ).logs[-15:]
+                return "\n".join(_clip(_TIMESTAMP_RE.sub("", line), 200) for line in logs) or "(no log output)"
+            except Exception as exc:
+                return f"(logs unavailable: {exc})"
+
+        logs_text = read_logs(previous=False)
+        # A crash-looping container often has no output yet; the crashed run's logs hold the error
+        previous_logs_text = read_logs(previous=True) if pod.restarts > 0 else None
+        previous_section = (
+            f"\nLogs from the previous (crashed) run:\n{previous_logs_text}\n" if previous_logs_text else ""
+        )
 
         events = k8s_service.get_events(namespace=req.namespace)
         relevant_events = [e for e in events if req.pod_name in e.object_name or req.pod_name in e.message]
         containers = "\n".join(
-            f"- {c.name} image={c.image} ready={c.ready} state={c.state} reason={c.reason or '-'} restarts={c.restart_count}"
+            f"- {c.name} image={c.image} ready={c.ready} state={c.state} reason={c.reason or '-'} "
+            f"restarts={c.restart_count} last-termination={c.last_termination_reason or '-'}"
+            f"{f' (exit code {c.last_exit_code})' if c.last_exit_code is not None else ''}"
             for c in pod.containers
         ) or "- none reported"
 
@@ -247,9 +265,9 @@ Pod status: {pod.status}, ready {pod.ready}, restarts {pod.restarts}, node {pod.
 Containers:
 {containers}
 
-Recent logs:
+Recent logs (current run):
 {logs_text}
-
+{previous_section}
 Events for this pod:
 {chr(10).join(f"{e.event_type} {e.reason}: {_clip(e.message)} (x{e.count})" for e in relevant_events[:6]) or "none"}
 

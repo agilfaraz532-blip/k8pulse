@@ -1,13 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Server, Search, CheckCircle2, AlertCircle, X } from 'lucide-react';
 import { NodeInfo } from '../types';
 
 interface NodesTabProps {
   nodes: NodeInfo[];
+  /** Pre-filled from the global search palette */
+  initialSearch?: string;
 }
 
-export function NodesTab({ nodes }: NodesTabProps) {
-  const [searchTerm, setSearchTerm] = useState('');
+export function NodesTab({ nodes, initialSearch }: NodesTabProps) {
+  const [searchTerm, setSearchTerm] = useState(initialSearch ?? '');
+
+  useEffect(() => {
+    if (initialSearch !== undefined) setSearchTerm(initialSearch);
+  }, [initialSearch]);
   const [selectedNode, setSelectedNode] = useState<NodeInfo | null>(null);
 
   const filteredNodes = nodes.filter(

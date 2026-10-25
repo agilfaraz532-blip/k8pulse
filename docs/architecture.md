@@ -33,8 +33,13 @@
 Kubernetes API directly. Pod and node CPU/memory usage comes from the `metrics.k8s.io` API (metrics-server).
 Without metrics-server, the overview falls back to resource *requests* and labels them as such.
 
-Simulated demo data is returned **only when no kubeconfig can be loaded**. If a live API call fails while
-connected, the error is returned; it is never replaced with fake data.
+Pod status mirrors `kubectl get pods`: container waiting/terminated reasons (`CrashLoopBackOff`, `Error`,
+`OOMKilled`…) take precedence over the pod phase, which stays `Running` while a container crash-loops. Each
+container also reports its last termination reason, exit code and time.
+
+If no cluster is reachable, the cluster endpoints return **`503`** and the UI shows an outage banner. Built-in
+sample data exists only for tests and offline UI work, and only when `DEMO_DATA=true`. If a live API call fails
+while connected, the error is returned; it is never replaced with fake data.
 
 ### Metric history
 The backend exposes `GET /metrics` (`app/monitoring/exporter.py`). Each Prometheus scrape reads the cluster and

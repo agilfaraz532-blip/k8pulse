@@ -1,15 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Layers, Radio, Search, CheckCircle2, AlertCircle } from 'lucide-react';
 import { DeploymentInfo, ServiceInfo } from '../types';
 
 interface DeploymentsTabProps {
   deployments: DeploymentInfo[];
   services: ServiceInfo[];
+  /** Pre-filled from the global search palette */
+  initialSearch?: string;
+  initialView?: 'deployments' | 'services';
 }
 
-export function DeploymentsTab({ deployments, services }: DeploymentsTabProps) {
-  const [subView, setSubView] = useState<'deployments' | 'services'>('deployments');
-  const [searchTerm, setSearchTerm] = useState('');
+export function DeploymentsTab({ deployments, services, initialSearch, initialView }: DeploymentsTabProps) {
+  const [subView, setSubView] = useState<'deployments' | 'services'>(initialView ?? 'deployments');
+  const [searchTerm, setSearchTerm] = useState(initialSearch ?? '');
+
+  useEffect(() => {
+    if (initialSearch !== undefined) setSearchTerm(initialSearch);
+    if (initialView) setSubView(initialView);
+  }, [initialSearch, initialView]);
 
   const filteredDeployments = deployments.filter(
     (d) =>

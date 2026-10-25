@@ -10,6 +10,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from app.core.config import settings
 from app.core.logging import logger
 from app.models.database import init_db
+from app.kubernetes.client import ClusterUnavailableError
 from app.monitoring.exporter import registry as metrics_registry
 
 # API Routers
@@ -71,6 +72,11 @@ async def add_process_time_and_logging(request: Request, call_next):
         logger.info(f"{request.method} {request.url.path} - Status: {response.status_code} ({process_time:.1f}ms)")
     
     return response
+
+
+@app.exception_handler(ClusterUnavailableError)
+async def cluster_unavailable_handler(request: Request, exc: ClusterUnavailableError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(Exception)

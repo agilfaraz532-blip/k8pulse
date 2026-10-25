@@ -28,6 +28,10 @@ class ContainerStatusInfo(BaseModel):
     restart_count: int
     state: str  # Running, Waiting, Terminated
     reason: Optional[str] = None
+    # Why the previous run ended (e.g. OOMKilled, Error) - key evidence for crash loops
+    last_termination_reason: Optional[str] = None
+    last_exit_code: Optional[int] = None
+    last_termination_at: Optional[str] = None
     started_at: Optional[str] = None
 
 

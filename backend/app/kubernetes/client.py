@@ -20,6 +20,10 @@ from app.schemas.k8s import (
 )
 
 
+class ClusterUnavailableError(Exception):
+    """Raised when the Kubernetes API is unreachable and sample data is not enabled."""
+
+
 class KubernetesClientService:
     def __init__(self):
         self.is_connected = False
@@ -46,7 +50,11 @@ class KubernetesClientService:
             self.custom_api = client.CustomObjectsApi()
             self.is_connected = True
         except Exception as exc:
-            logger.warning(f"Could not connect to live Kubernetes cluster: {exc}. Dashboard will show simulated demo data; AI analysis is disabled until a cluster is reachable.")
+            logger.warning(
+                f"Could not connect to a Kubernetes cluster: {exc}. "
+                + ("Serving built-in sample data (DEMO_DATA=true)." if settings.DEMO_DATA
+                   else "Cluster endpoints will return 503 until a cluster is reachable.")
+            )
             self.is_connected = False
 
     def _apply_api_host_override(self):
@@ -66,6 +74,14 @@ class KubernetesClientService:
         cfg.tls_server_name = "localhost"
         client.Configuration.set_default(cfg)
         logger.info(f"Kubernetes API host rewritten to {cfg.host}")
+
+    @staticmethod
+    def _require_sample_data() -> None:
+        """Never show made-up data as if it were real: sample data must be explicitly enabled."""
+        if not settings.DEMO_DATA:
+            raise ClusterUnavailableError(
+                "Kubernetes cluster is not reachable. Check the kubeconfig / in-cluster service account."
+            )
 
     def is_healthy(self) -> bool:
         if not self.is_connected or not self.core_v1:
@@ -148,7 +164,8 @@ class KubernetesClientService:
                 logger.warning(f"Error fetching live cluster overview: {e}")
                 raise
 
-        # Realistic default cluster overview
+        # Sample data (DEMO_DATA=true only): realistic default cluster overview
+        self._require_sample_data()
         return ClusterOverview(
             cluster_name="kind-k8spulse-cluster",
             server_version="v1.30.2",
@@ -221,12 +238,38 @@ class KubernetesClientService:
         "CreateContainerError", "InvalidImageName", "RunContainerError",
     }
 
+    @staticmethod
+    def _display_status(pod) -> str:
+        """
+        Status as `kubectl get pods` shows it. The pod phase alone is misleading: a container that
+        keeps crashing still has phase "Running", so container waiting/terminated reasons win.
+        """
+        if pod.metadata.deletion_timestamp:
+            return "Terminating"
+        phase = pod.status.phase or "Unknown"
+        if phase in ("Succeeded", "Failed"):
+            return pod.status.reason or phase
+        for cs in pod.status.container_statuses or []:
+            state = cs.state
+            if state and state.waiting and state.waiting.reason and state.waiting.reason != "ContainerCreating":
+                return state.waiting.reason
+            if state and state.terminated and state.terminated.reason:
+                return state.terminated.reason
+        for cs in pod.status.container_statuses or []:
+            if cs.state and cs.state.waiting and cs.state.waiting.reason == "ContainerCreating":
+                return "ContainerCreating"
+        return phase
+
     def _is_pod_unhealthy(self, pod) -> bool:
         if pod.status.phase in ("Failed", "Unknown"):
             return True
         for cs in pod.status.container_statuses or []:
             waiting = cs.state.waiting if cs.state else None
             if waiting and waiting.reason in self.UNHEALTHY_WAITING_REASONS:
+                return True
+            # Container exited with an error and is about to be restarted (between crash-loop back-offs)
+            terminated = cs.state.terminated if cs.state else None
+            if terminated and pod.status.phase == "Running" and (terminated.exit_code or 0) != 0:
                 return True
         return False
 
@@ -290,7 +333,8 @@ class KubernetesClientService:
                 logger.warning(f"Error fetching live nodes: {exc}")
                 raise
 
-        # Simulated rich Node Data
+        # Sample data (DEMO_DATA=true only): simulated rich Node Data
+        self._require_sample_data()
         return [
             NodeInfo(
                 name="kind-control-plane",
@@ -385,6 +429,7 @@ class KubernetesClientService:
                         elif cs.state.terminated:
                             state_name = "Terminated"
                             reason = cs.state.terminated.reason
+                        last = cs.last_state.terminated if cs.last_state else None
 
                         container_statuses.append(ContainerStatusInfo(
                             name=cs.name,
@@ -393,11 +438,12 @@ class KubernetesClientService:
                             restart_count=cs.restart_count,
                             state=state_name,
                             reason=reason,
+                            last_termination_reason=last.reason if last else None,
+                            last_exit_code=last.exit_code if last else None,
+                            last_termination_at=last.finished_at.isoformat() if last and last.finished_at else None,
                         ))
 
-                    phase = p.status.phase or "Unknown"
-                    if any(cs.state and cs.state.waiting and cs.state.waiting.reason == "CrashLoopBackOff" for cs in (p.status.container_statuses or [])):
-                        phase = "CrashLoopBackOff"
+                    phase = self._display_status(p)
 
                     res.append(PodInfo(
                         name=p.metadata.name,
@@ -421,7 +467,8 @@ class KubernetesClientService:
                 logger.warning(f"Error fetching live pods: {exc}")
                 raise
 
-        # Simulated pods
+        # Sample data (DEMO_DATA=true only): simulated pods
+        self._require_sample_data()
         return [
             PodInfo(
                 name="backend-api-7b89f-2m8kp",
@@ -569,7 +616,8 @@ class KubernetesClientService:
                 logger.warning(f"Error fetching live deployments: {exc}")
                 raise
 
-        # Simulated deployments
+        # Sample data (DEMO_DATA=true only): simulated deployments
+        self._require_sample_data()
         return [
             DeploymentInfo(
                 name="backend-api",
@@ -673,7 +721,8 @@ class KubernetesClientService:
                 logger.warning(f"Error fetching live services: {exc}")
                 raise
 
-        # Simulated services
+        # Sample data (DEMO_DATA=true only): simulated services
+        self._require_sample_data()
         return [
             ServiceInfo(
                 name="kubernetes",
@@ -779,7 +828,8 @@ class KubernetesClientService:
                 logger.warning(f"Error fetching live events: {exc}")
                 raise
 
-        # Simulated events
+        # Sample data (DEMO_DATA=true only): simulated events
+        self._require_sample_data()
         return [
             EventInfo(
                 timestamp="2026-09-19T20:30:15Z",
@@ -823,7 +873,15 @@ class KubernetesClientService:
             ),
         ]
 
-    def get_pod_logs(self, namespace: str, pod_name: str, container_name: Optional[str] = None, tail_lines: int = 100) -> PodLogsResponse:
+    def get_pod_logs(
+        self,
+        namespace: str,
+        pod_name: str,
+        container_name: Optional[str] = None,
+        tail_lines: int = 100,
+        previous: bool = False,
+    ) -> PodLogsResponse:
+        """previous=True returns the logs of the last terminated run (how crash loops are debugged)."""
         if self.is_connected and self.core_v1:
             try:
                 raw_logs = self.core_v1.read_namespaced_pod_log(
@@ -832,6 +890,7 @@ class KubernetesClientService:
                     container=container_name,
                     tail_lines=tail_lines,
                     timestamps=True,
+                    previous=previous,
                 )
                 lines = raw_logs.strip().split("\n") if raw_logs else []
                 return PodLogsResponse(
@@ -845,7 +904,8 @@ class KubernetesClientService:
                 logger.warning(f"Error fetching live pod logs: {exc}")
                 raise
 
-        # Simulated logs for test/demo
+        # Sample data (DEMO_DATA=true only): simulated logs for test/demo
+        self._require_sample_data()
         sample_logs = [
             "2026-09-19T20:40:01.120Z INFO [app.main] Initializing K8sPulse API server v1.0.0",
             "2026-09-19T20:40:01.350Z INFO [app.core.database] Connected to database connection pool",
