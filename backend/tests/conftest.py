@@ -14,6 +14,12 @@ os.environ["AUTH_ENABLED"] = "false"
 os.environ["KUBECONFIG_PATH"] = os.path.join(_tmpdir, "missing-kubeconfig")
 os.environ["K8S_IN_CLUSTER"] = "false"
 os.environ["DEMO_DATA"] = "true"
+# Pin account settings so a developer's backend/.env cannot change test behaviour
+os.environ["SIGNUP_MODE"] = "approval"
+os.environ["SIGNUP_DEFAULT_ROLE"] = "viewer"
+os.environ["ADMIN_REGISTRATION_KEY"] = ""
+os.environ["ADMIN_USERNAME"] = "admin"
+os.environ["ADMIN_PASSWORD"] = "admin"
 os.environ["PROMETHEUS_URL"] = "http://127.0.0.1:9"
 os.environ["PROMETHEUS_TIMEOUT"] = "1"
 os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"
