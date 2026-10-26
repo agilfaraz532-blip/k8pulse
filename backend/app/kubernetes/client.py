@@ -434,12 +434,15 @@ class KubernetesClientService:
                             ready_containers += 1
                         state_name = "Running"
                         reason = None
+                        message = None
                         if cs.state.waiting:
                             state_name = "Waiting"
                             reason = cs.state.waiting.reason
+                            message = cs.state.waiting.message
                         elif cs.state.terminated:
                             state_name = "Terminated"
                             reason = cs.state.terminated.reason
+                            message = cs.state.terminated.message
                         last = cs.last_state.terminated if cs.last_state else None
 
                         container_statuses.append(ContainerStatusInfo(
@@ -449,7 +452,9 @@ class KubernetesClientService:
                             restart_count=cs.restart_count,
                             state=state_name,
                             reason=reason,
+                            message=message,
                             last_termination_reason=last.reason if last else None,
+                            last_termination_message=last.message if last else None,
                             last_exit_code=last.exit_code if last else None,
                             last_termination_at=last.finished_at.isoformat() if last and last.finished_at else None,
                         ))
@@ -885,6 +890,67 @@ class KubernetesClientService:
             ),
         ]
 
+    def get_pod_spec_summary(self, namespace: str, pod_name: str) -> List[str]:
+        """
+        What the pod asked for, one line per fact: images, commands, ports, probes, resources,
+        config/secret references, volumes and security settings. Root causes often live here.
+        """
+        if not (self.is_connected and self.core_v1):
+            return []
+        pod = self.core_v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+
+        def probe(p) -> str:
+            if p.http_get:
+                return f"HTTP GET {p.http_get.path or '/'} on port {p.http_get.port}"
+            if p.tcp_socket:
+                return f"TCP port {p.tcp_socket.port}"
+            if p._exec:
+                return f"exec {' '.join(p._exec.command or [])}"
+            return "unknown"
+
+        lines = []
+        for c in pod.spec.containers:
+            lines.append(f"container {c.name}: image {c.image}")
+            if c.command or c.args:
+                lines.append(f"  command: {' '.join((c.command or []) + (c.args or []))[:200]}")
+            if c.ports:
+                lines.append(f"  listens on port: {', '.join(str(p.container_port) for p in c.ports)}")
+            if c.resources and (c.resources.requests or c.resources.limits):
+                lines.append(
+                    f"  resources: requests {dict(c.resources.requests or {})}, limits {dict(c.resources.limits or {})}"
+                )
+            if c.liveness_probe:
+                lines.append(f"  liveness probe: {probe(c.liveness_probe)}")
+            if c.readiness_probe:
+                lines.append(f"  readiness probe: {probe(c.readiness_probe)}")
+            for ef in c.env_from or []:
+                if ef.config_map_ref:
+                    lines.append(f"  env from ConfigMap: {ef.config_map_ref.name}")
+                if ef.secret_ref:
+                    lines.append(f"  env from Secret: {ef.secret_ref.name}")
+            for e in c.env or []:
+                ref = e.value_from
+                if ref and ref.secret_key_ref:
+                    lines.append(f"  env {e.name} from Secret {ref.secret_key_ref.name} key {ref.secret_key_ref.key}")
+                elif ref and ref.config_map_key_ref:
+                    lines.append(
+                        f"  env {e.name} from ConfigMap {ref.config_map_key_ref.name} key {ref.config_map_key_ref.key}"
+                    )
+            for m in c.volume_mounts or []:
+                if not m.mount_path.startswith("/var/run/secrets/kubernetes.io"):
+                    lines.append(f"  mounts volume {m.name} at {m.mount_path}{' (read-only)' if m.read_only else ''}")
+            sc = c.security_context
+            if sc and (sc.read_only_root_filesystem or sc.run_as_non_root or sc.run_as_user is not None):
+                flags = [
+                    "readOnlyRootFilesystem" if sc.read_only_root_filesystem else "",
+                    "runAsNonRoot" if sc.run_as_non_root else "",
+                    f"runAsUser {sc.run_as_user}" if sc.run_as_user is not None else "",
+                ]
+                lines.append(f"  security: {', '.join(f for f in flags if f)}")
+        if pod.spec.node_selector:
+            lines.append(f"nodeSelector: {pod.spec.node_selector}")
+        return lines
+
     def get_pod_logs(
         self,
         namespace: str,
@@ -913,7 +979,11 @@ class KubernetesClientService:
                     total_lines=len(lines),
                 )
             except Exception as exc:
-                logger.warning(f"Error fetching live pod logs: {exc}")
+                # 400s are expected (container not started yet / no previous run); keep them out of the warnings
+                if getattr(exc, "status", None) == 400:
+                    logger.debug(f"No logs for {namespace}/{pod_name} (previous={previous}): {getattr(exc, 'body', exc)}")
+                else:
+                    logger.warning(f"Error fetching live pod logs: {exc}")
                 raise
 
         # Sample data (DEMO_DATA=true only): simulated logs for test/demo

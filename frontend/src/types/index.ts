@@ -66,9 +66,11 @@ export interface ContainerStatusInfo {
   restart_count: number;
   state: string;
   reason?: string;
+  message?: string;
   last_termination_reason?: string;
   last_exit_code?: number;
   last_termination_at?: string;
+  last_termination_message?: string;
   started_at?: string;
 }
 

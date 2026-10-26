@@ -28,10 +28,13 @@ class ContainerStatusInfo(BaseModel):
     restart_count: int
     state: str  # Running, Waiting, Terminated
     reason: Optional[str] = None
+    # Detail for the current waiting/terminated state, e.g. 'secret "db-credentials" not found'
+    message: Optional[str] = None
     # Why the previous run ended (e.g. OOMKilled, Error) - key evidence for crash loops
     last_termination_reason: Optional[str] = None
     last_exit_code: Optional[int] = None
     last_termination_at: Optional[str] = None
+    last_termination_message: Optional[str] = None
     started_at: Optional[str] = None
 
 

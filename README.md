@@ -30,7 +30,8 @@ it on one screen and asks an LLM to connect the dots.
 - **Global search**: press <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> to find any pod, deployment, service, node or namespace and jump to it.
 - **Log viewer**: live tailing with search and severity highlighting, plus the logs of the previous (crashed) run, which is where the error usually is.
 - **Alert engine**: rules for CPU, memory, crash loops, pod restarts and NotReady nodes, evaluated every 30 seconds. Each rule has a hold time, alerts resolve themselves when the condition clears, and crash-loop alerts don't flap between restarts.
-- **AI SRE copilot**: one-click diagnosis of pods that are failing right now, or questions about the whole cluster. The model sees the pod's status, termination reason, current and previous logs and events, and streams its answer live. If no model is reachable you get an error, not invented text.
+- **AI SRE copilot**: one-click diagnosis of pods that are failing right now, or questions about the whole cluster. Deterministic checks first verify the facts (9 common failure patterns: image pull, missing ConfigMap/Secret, OOM, probe port/path, unschedulable, missing executable, read-only filesystem, missing Service, missing env var), then the model explains them using the pod spec, container errors, current and crashed-run logs and events, streamed live. If no model is reachable you get an error, not invented text.
+- **Measured, not claimed**: on 11 real failure scenarios the copilot found the root cause in **11/11** and gave a specific fix in **10/11**, on a 3B model running locally on a CPU. See [docs/ai-evaluation.md](docs/ai-evaluation.md).
 - **Grafana**: Prometheus data source and a cluster dashboard, provisioned automatically.
 - **Secure by default**: JWT login, hashed passwords, admin-only user creation and a read-only Kubernetes RBAC role.
 - **Works everywhere**: responsive layout for desktop, tablet and phone.
@@ -39,7 +40,7 @@ it on one screen and asks an LLM to connect the dots.
 
 All screenshots are from a live Docker Desktop cluster running the [demo workload](#try-it-with-a-realistic-demo-app). Nothing is mocked.
 
-**AI copilot diagnosing a crash-looping pod**: it reads the crashed run's logs, finds the missing setting and suggests a fix on the Deployment.
+**AI copilot diagnosing a crash-looping pod**: automated checks verify the cause from the crashed run's logs, the model explains it, and only verified fix commands are offered.
 
 ![AI SRE copilot incident analysis](docs/screenshots/ai-diagnosis.png)
 
@@ -176,7 +177,8 @@ cd frontend && npm run build  # type-check + production build
 ├── frontend/             React + Vite + Tailwind UI, nginx template
 ├── monitoring/           Prometheus config, alert rules, Grafana provisioning + dashboard
 ├── k8s/                  Kubernetes manifests (assembled by ./kustomization.yaml)
-├── demo/                 Demo workload with intentional incidents (shop-demo.yaml)
+├── demo/                 Demo workload (shop-demo.yaml) and AI evaluation scenarios (ai-eval.yaml)
+├── scripts/              ai_eval.py: scores the AI copilot against the evaluation scenarios
 ├── docs/                 Architecture, API, deployment, troubleshooting
 ├── docker-compose.yml    Local full stack
 └── .github/workflows/    CI: backend tests, frontend build, image publishing

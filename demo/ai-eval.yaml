@@ -1,0 +1,248 @@
+# AI copilot evaluation: one workload per common, real Kubernetes failure (plus a healthy control).
+# Every failure here is produced by Kubernetes itself, nothing is simulated in K8sPulse.
+#
+#   kubectl apply -f demo/ai-eval.yaml
+#   python scripts/ai_eval.py            # runs the copilot on each pod and scores the answers
+#   kubectl delete namespace ai-eval
+#
+# The `eval/expect` annotation documents the ground truth the scorer checks for.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-eval
+---
+# 1. Typo in the image tag -> ErrImagePull / ImagePullBackOff
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-image-typo
+  namespace: ai-eval
+  annotations: { eval/expect: "image tag does not exist" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: web-image-typo } }
+  template:
+    metadata: { labels: { app: web-image-typo } }
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-alpien
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 64Mi } }
+---
+# 2. Environment comes from a ConfigMap that was never created -> CreateContainerConfigError
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-missing-configmap
+  namespace: ai-eval
+  annotations: { eval/expect: "configmap api-config not found" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: api-missing-configmap } }
+  template:
+    metadata: { labels: { app: api-missing-configmap } }
+    spec:
+      containers:
+        - name: api
+          image: busybox:1.36
+          command: ['sh', '-c', 'echo starting; sleep 3600']
+          envFrom:
+            - configMapRef: { name: api-config }
+          resources: { requests: { cpu: 10m, memory: 8Mi }, limits: { memory: 32Mi } }
+---
+# 3. Database password from a Secret that does not exist -> CreateContainerConfigError
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-missing-secret
+  namespace: ai-eval
+  annotations: { eval/expect: "secret db-credentials not found" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: worker-missing-secret } }
+  template:
+    metadata: { labels: { app: worker-missing-secret } }
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.36
+          command: ['sh', '-c', 'echo connecting; sleep 3600']
+          env:
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-credentials, key: password } }
+          resources: { requests: { cpu: 10m, memory: 8Mi }, limits: { memory: 32Mi } }
+---
+# 4. Memory limit far below what the process needs -> OOMKilled
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache-oom
+  namespace: ai-eval
+  annotations: { eval/expect: "memory limit too low (OOMKilled)" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: cache-oom } }
+  template:
+    metadata: { labels: { app: cache-oom } }
+    spec:
+      containers:
+        - name: cache
+          image: busybox:1.36
+          command: ['sh', '-c', 'echo "warming cache"; tail /dev/zero']
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 24Mi } }
+---
+# 5. Liveness probe checks the wrong port -> kubelet keeps killing a healthy nginx
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-bad-liveness
+  namespace: ai-eval
+  annotations: { eval/expect: "liveness probe on wrong port (8080 vs 80)" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: frontend-bad-liveness } }
+  template:
+    metadata: { labels: { app: frontend-bad-liveness } }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{ containerPort: 80 }]
+          livenessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 64Mi } }
+---
+# 6. Readiness probe hits a path that returns 404 -> Running but never Ready (no traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-not-ready
+  namespace: ai-eval
+  annotations: { eval/expect: "readiness probe /healthz returns 404" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: checkout-not-ready } }
+  template:
+    metadata: { labels: { app: checkout-not-ready } }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{ containerPort: 80 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 80 }
+            periodSeconds: 5
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 64Mi } }
+---
+# 7. Requests more CPU than any node has -> Pending (FailedScheduling)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-unschedulable
+  namespace: ai-eval
+  annotations: { eval/expect: "insufficient cpu, cannot be scheduled" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ml-unschedulable } }
+  template:
+    metadata: { labels: { app: ml-unschedulable } }
+    spec:
+      containers:
+        - name: trainer
+          image: busybox:1.36
+          command: ['sh', '-c', 'sleep 3600']
+          resources: { requests: { cpu: "64", memory: 64Mi } }
+---
+# 8. Entrypoint binary does not exist in the image -> container fails to start
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobs-bad-command
+  namespace: ai-eval
+  annotations: { eval/expect: "executable not found in image" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: jobs-bad-command } }
+  template:
+    metadata: { labels: { app: jobs-bad-command } }
+    spec:
+      containers:
+        - name: jobs
+          image: busybox:1.36
+          command: ['/app/run-jobs', '--queue=default']
+          resources: { requests: { cpu: 10m, memory: 8Mi }, limits: { memory: 32Mi } }
+---
+# 9. App writes to a read-only root filesystem -> crashes on startup
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uploads-readonly-fs
+  namespace: ai-eval
+  annotations: { eval/expect: "read-only filesystem, needs a writable volume" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: uploads-readonly-fs } }
+  template:
+    metadata: { labels: { app: uploads-readonly-fs } }
+    spec:
+      containers:
+        - name: uploads
+          image: busybox:1.36
+          command: ['sh', '-c', 'echo "preparing upload dir"; mkdir -p /var/uploads/tmp && echo ready && sleep 3600']
+          securityContext: { readOnlyRootFilesystem: true }
+          resources: { requests: { cpu: 10m, memory: 8Mi }, limits: { memory: 32Mi } }
+---
+# 10. Depends on a database Service that does not exist -> DNS failure, exits
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-db-unreachable
+  namespace: ai-eval
+  annotations: { eval/expect: "database host orders-db cannot be resolved (service missing)" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: orders-db-unreachable } }
+  template:
+    metadata: { labels: { app: orders-db-unreachable } }
+    spec:
+      containers:
+        - name: orders
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "orders-api starting, connecting to orders-db:5432"
+              if ! nslookup orders-db >/dev/null 2>&1; then
+                echo "ERROR could not resolve host orders-db: Name or service not known"
+                echo "FATAL database unavailable, exiting"
+                exit 2
+              fi
+              sleep 3600
+          resources: { requests: { cpu: 10m, memory: 8Mi }, limits: { memory: 32Mi } }
+---
+# 11. Control: a healthy pod. The copilot should say so and not invent a problem.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthy-control
+  namespace: ai-eval
+  annotations: { eval/expect: "healthy, no action needed" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: healthy-control } }
+  template:
+    metadata: { labels: { app: healthy-control } }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{ containerPort: 80 }]
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            periodSeconds: 10
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 64Mi } }

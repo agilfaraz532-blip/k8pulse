@@ -92,3 +92,14 @@ async def test_ai_stream_reports_error_when_no_model(monkeypatch):
     events = [json.loads(line) for line in stream.text.splitlines() if line.strip()]
     assert [e["type"] for e in events] == ["meta", "error"]
     assert "ollama serve" in events[-1]["message"]
+
+
+def test_log_errors_are_explained_not_dumped():
+    """Raw HTTP errors confused the model ('BadRequest'); it gets a plain explanation instead."""
+    from app.services.ai import _describe_log_error
+
+    waiting = '(400) Reason: Bad Request ... container "api" in pod "x" is waiting to start: CreateContainerConfigError'
+    assert _describe_log_error(waiting, previous=False) == "(no logs: the container has never started)"
+    no_previous = '(400) previous terminated container "web" in pod "x" not found'
+    assert _describe_log_error(no_previous, previous=True).startswith("(no previous run")
+    assert "Bad Request" not in _describe_log_error("(500) Internal error", previous=False)

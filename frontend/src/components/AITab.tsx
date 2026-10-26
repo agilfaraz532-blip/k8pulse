@@ -304,41 +304,50 @@ export function AITab({ pods, incidentTarget, onIncidentHandled }: AITabProps) {
               {analysis.summary}
             </div>
 
+            {/* Verified findings from the deterministic checks (shown before the model's explanation) */}
+            {analysis.recommendations.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Verified Findings
+                  <span className="normal-case tracking-normal font-normal text-slate-500">· automated checks on live data</span>
+                </h4>
+                <div className="space-y-2">
+                  {analysis.recommendations.map((rec, i) => {
+                    const [fact, fix] = rec.split(' Fix: ');
+                    return (
+                      <div key={i} className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-900/50 text-xs text-slate-200 space-y-1.5">
+                        <p className="flex items-start gap-2.5">
+                          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-px" />
+                          <span>{fact}</span>
+                        </p>
+                        {fix && (
+                          <p className="flex items-start gap-2.5 text-emerald-300">
+                            <Lightbulb className="w-4 h-4 flex-shrink-0 mt-px" />
+                            <span>{fix}</span>
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Root Cause Markdown Breakdown */}
             <div className="space-y-2">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Detailed Diagnostic Findings</h4>
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">{analysis.recommendations.length > 0 ? 'AI Explanation' : 'Detailed Diagnostic Findings'}</h4>
               <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80 text-xs text-slate-300 leading-relaxed font-sans">
                 <Markdown text={analysis.root_cause_analysis} />
                 {loading && <span className="inline-block w-2 h-3.5 mt-1 align-middle bg-purple-400 animate-pulse" />}
               </div>
             </div>
 
-            {/* Actionable Recommendations */}
-            {analysis.recommendations.length > 0 && (
-            <div className="space-y-2">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Lightbulb className="w-4 h-4 text-amber-400" /> SRE Action Plan
-              </h4>
-              <div className="space-y-2">
-                {analysis.recommendations.map((rec, i) => (
-                  <div
-                    key={i}
-                    className="p-3 rounded-lg bg-slate-900 border border-slate-800/70 flex items-start gap-2.5 text-xs text-slate-200"
-                  >
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-                    <span>{rec}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            )}
-
             {/* Suggested Kubectl Commands (extracted from the model's answer) */}
             {analysis.suggested_commands.length > 0 && (
             <div className="space-y-2">
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Terminal className="w-4 h-4 text-cyan-400" /> Suggested Kubectl Diagnostic Commands
+                <Terminal className="w-4 h-4 text-cyan-400" />
+                {analysis.recommendations.length > 0 ? 'Verified Fix Commands' : 'Suggested Kubectl Commands'}
               </h4>
               <div className="space-y-2">
                 {analysis.suggested_commands.map((cmd, i) => (

@@ -10,7 +10,10 @@ from google import genai
 from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.ai import AIAnalysisResponse, AIClusterAnalysisRequest, AIPodIncidentRequest
+from kubernetes.utils import parse_quantity
+
 from app.kubernetes.client import k8s_service
+from app.services.analyzers import Finding, PodContext, analyze
 
 
 class AIUnavailableError(Exception):
@@ -23,6 +26,18 @@ def _now() -> str:
 
 # Local models on CPU read prompts slowly (a few tokens/s), so prompts are kept compact.
 _TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s+")
+
+
+def _describe_log_error(error: str, previous: bool) -> str:
+    """Raw API errors (HTTP headers, 'Bad Request') mislead the model; say what they mean instead."""
+    lower = error.lower()
+    if previous and "previous terminated container" in lower:
+        return "(no previous run: the container has not terminated before)"
+    if "waiting to start" in lower or "containercreating" in lower or "podinitializing" in lower:
+        return "(no logs: the container has never started)"
+    if "not found" in lower:
+        return "(no logs: the pod or container no longer exists)"
+    return "(logs unavailable)"
 
 
 def _clip(text: str, limit: int = 160) -> str:
@@ -238,7 +253,7 @@ Put each kubectl command in backticks.
                 ).logs[-15:]
                 return "\n".join(_clip(_TIMESTAMP_RE.sub("", line), 200) for line in logs) or "(no log output)"
             except Exception as exc:
-                return f"(logs unavailable: {exc})"
+                return _describe_log_error(str(exc), previous)
 
         logs_text = read_logs(previous=False)
         # A crash-looping container often has no output yet; the crashed run's logs hold the error
@@ -247,12 +262,23 @@ Put each kubectl command in backticks.
             f"\nLogs from the previous (crashed) run:\n{previous_logs_text}\n" if previous_logs_text else ""
         )
 
+        try:
+            spec_text = "\n".join(k8s_service.get_pod_spec_summary(req.namespace, req.pod_name)) or "(not available)"
+        except Exception as exc:
+            logger.debug(f"Could not read pod spec: {exc}")
+            spec_text = "(not available)"
+
         events = k8s_service.get_events(namespace=req.namespace)
         relevant_events = [e for e in events if req.pod_name in e.object_name or req.pod_name in e.message]
+
+        findings = self._run_analyzers(req, pod, relevant_events, logs_text, previous_logs_text)
+        findings_text = "\n".join(f"- {f.as_text()}" for f in findings) or "- none matched"
         containers = "\n".join(
             f"- {c.name} image={c.image} ready={c.ready} state={c.state} reason={c.reason or '-'} "
             f"restarts={c.restart_count} last-termination={c.last_termination_reason or '-'}"
             f"{f' (exit code {c.last_exit_code})' if c.last_exit_code is not None else ''}"
+            f"{chr(10) + '    state message: ' + _clip(c.message, 300) if c.message else ''}"
+            f"{chr(10) + '    last termination message: ' + _clip(c.last_termination_message, 300) if c.last_termination_message else ''}"
             for c in pod.containers
         ) or "- none reported"
 
@@ -263,6 +289,9 @@ Do not invent errors that are not in the logs/events. If the pod looks healthy, 
 
 Pod status: {pod.status}, ready {pod.ready}, restarts {pod.restarts}, node {pod.node_name}, age {pod.age}
 Managed by: {pod.controller or "nothing (bare pod)"}
+
+Pod spec (what was requested):
+{spec_text}
 Containers:
 {containers}
 
@@ -270,9 +299,14 @@ Recent logs (current run):
 {logs_text}
 {previous_section}
 Events for this pod:
-{chr(10).join(f"{e.event_type} {e.reason}: {_clip(e.message)} (x{e.count})" for e in relevant_events[:6]) or "none"}
+{chr(10).join(f"{e.event_type} {e.reason}: {_clip(e.message, 300)} (x{e.count})" for e in relevant_events[:6]) or "none"}
+
+Automated checks (verified facts from the data above; base Root Cause and Remediation on these when present):
+{findings_text}
 
 Answer in concise markdown (under 250 words) with sections: Root Cause, Impact, Remediation, Commands.
+Name the exact failing setting (image, probe, port, limit, ConfigMap/Secret name, path) and compare it with
+what the pod spec, events and logs show.
 Put each kubectl command in backticks.
 Remediation must change the managing workload ({pod.controller or "the pod spec"}), because pods are
 recreated from it: for example `kubectl set env`, `kubectl set resources` or `kubectl edit` on it, then
@@ -280,20 +314,60 @@ recreated from it: for example `kubectl set env`, `kubectl set resources` or `ku
 """
 
         unhealthy = pod.status not in ("Running", "Succeeded") or any(c.reason for c in pod.containers if not c.ready)
+        not_ready = pod.status == "Running" and not all(c.ready for c in pod.containers)
+        severity = (
+            "Critical" if unhealthy or (findings and pod.restarts > 0)
+            else "Warning" if findings or not_ready or pod.restarts > 0
+            else "Normal"
+        )
+        commands = list(dict.fromkeys(cmd for f in findings for cmd in f.commands))
         meta = AIAnalysisResponse(
             title=f"Incident Analysis: Pod {req.pod_name}",
-            severity="Critical" if unhealthy else "Warning" if pod.restarts > 0 else "Normal",
+            severity=severity,
             summary=(
                 f"Pod {req.namespace}/{req.pod_name} is {pod.status} ({pod.ready} ready) with {pod.restarts} restarts "
                 f"and {len(relevant_events)} related events."
+                + (f" Automated checks: {findings[0].title}" if findings else "")
             ),
             root_cause_analysis="",
-            recommendations=[],
-            suggested_commands=[],
+            recommendations=[f.as_text() for f in findings],
+            suggested_commands=commands,
             model_used="",
             timestamp=_now(),
         )
         return prompt, meta
+
+    @staticmethod
+    def _run_analyzers(req: AIPodIncidentRequest, pod, events, logs_text: str, previous_logs_text) -> List[Finding]:
+        """Deterministic checks (see analyzers.py); failures here never block the LLM analysis."""
+        try:
+            raw_pod = k8s_service.core_v1.read_namespaced_pod(name=req.pod_name, namespace=req.namespace)
+            nodes = k8s_service.get_nodes()
+            ctx = PodContext(
+                namespace=req.namespace,
+                pod=raw_pod,
+                controller=pod.controller,
+                event_messages=[e.message for e in events],
+                logs=f"{logs_text}\n{previous_logs_text or ''}",
+                service_names=[s.name for s in k8s_service.get_services(namespace=req.namespace)],
+                max_node_cpu=max((float(parse_quantity(n.cpu_allocatable)) for n in nodes), default=0.0),
+                max_node_memory=max((float(parse_quantity(n.memory_allocatable)) for n in nodes), default=0.0),
+            )
+            return analyze(ctx)
+        except Exception as exc:
+            logger.warning(f"Automated incident checks failed: {exc}")
+            return []
+
+    @staticmethod
+    def _merge_commands(meta: AIAnalysisResponse, text: str) -> List[str]:
+        """
+        Commands from the deterministic checks are verified; a small local model often gets the
+        intent right but invents kubectl syntax. So when a check matched, only its commands are
+        offered for copy/paste; the model's commands are used only when no check applied.
+        """
+        if meta.suggested_commands:
+            return meta.suggested_commands
+        return extract_kubectl_commands(text)
 
     # ------------------------------------------------------------------ Public API
 
@@ -301,7 +375,7 @@ recreated from it: for example `kubectl set env`, `kubectl set resources` or `ku
         ai_text, model_used = await self._generate_with_fallback(prompt)
         return meta.model_copy(update={
             "root_cause_analysis": ai_text,
-            "suggested_commands": extract_kubectl_commands(ai_text),
+            "suggested_commands": self._merge_commands(meta, ai_text),
             "model_used": model_used,
             "timestamp": _now(),
         })
@@ -352,14 +426,14 @@ recreated from it: for example `kubectl set env`, `kubectl set resources` or `ku
             if text:
                 logger.info(f"AI analysis streamed by Ollama ({self.ollama_model})")
                 yield event({"type": "done", "model_used": f"ollama:{self.ollama_model}",
-                             "suggested_commands": extract_kubectl_commands(text)})
+                             "suggested_commands": self._merge_commands(meta, text)})
                 return
             ollama_error = "empty response"
         except Exception as exc:
             logger.warning(f"Ollama streaming failed at {self.ollama_base_url} ({type(exc).__name__}: {exc})")
             if text:
                 yield event({"type": "done", "model_used": f"ollama:{self.ollama_model}",
-                             "suggested_commands": extract_kubectl_commands(text),
+                             "suggested_commands": self._merge_commands(meta, text),
                              "notice": f"Ollama stopped mid-response: {exc}"})
                 return
             ollama_error = f"{type(exc).__name__}: {exc}"
@@ -369,7 +443,7 @@ recreated from it: for example `kubectl set env`, `kubectl set resources` or `ku
                 text = await asyncio.to_thread(self._call_gemini, prompt)
                 yield event({"type": "token", "text": text})
                 yield event({"type": "done", "model_used": self.model_name,
-                             "suggested_commands": extract_kubectl_commands(text),
+                             "suggested_commands": self._merge_commands(meta, text),
                              "notice": f"Ollama unavailable ({ollama_error}); answered by Gemini."})
                 return
             except Exception as exc:
