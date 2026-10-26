@@ -26,7 +26,7 @@ async def test_protected_routes_require_token(auth_enabled):
         assert (await ac.post("/api/ai/explain-cluster", json={})).status_code == 401
         # health, auth config and the Prometheus scrape endpoint stay public
         assert (await ac.get("/api/health")).status_code == 200
-        assert (await ac.get("/api/auth/config")).json() == {"auth_enabled": True, "signup_mode": "approval"}
+        assert (await ac.get("/api/auth/config")).json() == {"auth_enabled": True, "signup_mode": "approval", "admin_signup_enabled": False}
         assert (await ac.get("/metrics")).status_code == 200
 
 
@@ -124,3 +124,42 @@ async def test_admin_cannot_lock_out_the_last_admin(auth_enabled):
         assert res.status_code == 400
         res = await ac.patch(f"/api/auth/users/{me['id']}", json={"role": "viewer"}, headers=admin)
         assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_admin_registration_needs_the_key(auth_enabled, monkeypatch):
+    form = {"full_name": "Ops Lead", "username": "opslead", "email": "ops@example.com", "password": "secret123"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # No key configured -> admin registration is off
+        res = await ac.post("/api/auth/admin/signup", json={**form, "registration_key": "anything"})
+        assert res.status_code == 403 and "disabled" in res.json()["detail"]
+
+        monkeypatch.setattr(settings, "ADMIN_REGISTRATION_KEY", "s3cret-key")
+        assert (await ac.get("/api/auth/config")).json()["admin_signup_enabled"] is True
+        wrong = await ac.post("/api/auth/admin/signup", json={**form, "registration_key": "guess"})
+        assert wrong.status_code == 403 and "incorrect" in wrong.json()["detail"]
+
+        ok = await ac.post("/api/auth/admin/signup", json={**form, "registration_key": "s3cret-key"})
+        assert ok.status_code == 201 and ok.json()["status"] == "active"
+        login = await ac.post("/api/auth/login", json={"username": "opslead", "password": "secret123", "portal": "admin"})
+        assert login.status_code == 200 and login.json()["user"]["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_each_sign_in_page_admits_only_its_accounts(auth_enabled, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MODE", "open")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        user = {"full_name": "Meera S", "username": "meera", "email": "meera@example.com", "password": "secret123"}
+        assert (await ac.post("/api/auth/signup", json=user)).status_code == 201
+
+        # A normal user cannot use the admin page, and the admin cannot use the user page
+        as_admin = await ac.post("/api/auth/login", json={"username": "meera", "password": "secret123", "portal": "admin"})
+        assert as_admin.status_code == 403 and "not an administrator" in as_admin.json()["detail"]
+        admin_on_user_page = await ac.post("/api/auth/login", json={
+            "username": settings.ADMIN_USERNAME, "password": settings.ADMIN_PASSWORD, "portal": "user"})
+        assert admin_on_user_page.status_code == 403 and "administrator sign-in" in admin_on_user_page.json()["detail"]
+
+        assert (await ac.post("/api/auth/login", json={"username": "meera", "password": "secret123", "portal": "user"})).status_code == 200
+        # Wrong password on either page still says only "invalid"
+        bad = await ac.post("/api/auth/login", json={"username": "meera", "password": "wrong1234", "portal": "admin"})
+        assert bad.status_code == 401

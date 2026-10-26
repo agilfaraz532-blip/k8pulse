@@ -59,6 +59,7 @@ import { LoginPage } from './components/LoginPage';
 import { CommandPalette, SearchTarget } from './components/CommandPalette';
 import { LogoMark, Wordmark } from './components/Logo';
 import { needsAttention } from './components/status';
+import { AUTH_PATHS, navigate, signInPathForLastPortal } from './services/router';
 import { AuthUser, UNAUTHORIZED_EVENT, fetchAuthConfig, fetchCurrentUser, fetchUsers, getToken, logout } from './services/api';
 
 // Each tab is its own chunk so the first screen loads less JavaScript
@@ -95,7 +96,11 @@ export default function App() {
       }
     };
     checkSession();
-    const onUnauthorized = () => setUser(null);
+    const onUnauthorized = () => {
+      setUser(null);
+      // Back to the sign-in page this person used (user or administrator)
+      navigate(signInPathForLastPortal(), { replace: true });
+    };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
   }, []);
@@ -110,7 +115,20 @@ export default function App() {
       </div>
     );
   }
-  if (user === null) return <LoginPage onLoggedIn={setUser} />;
+  if (user === null) {
+    return (
+      <LoginPage
+        onLoggedIn={(u) => {
+          setUser(u);
+          navigate('/', { replace: true });
+        }}
+      />
+    );
+  }
+  // Signed in but on a sign-in/registration address: show the dashboard at "/"
+  if ((Object.values(AUTH_PATHS) as string[]).includes(window.location.pathname)) {
+    window.history.replaceState(null, '', '/');
+  }
   return <Dashboard user={user} />;
 }
 

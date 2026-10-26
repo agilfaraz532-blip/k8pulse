@@ -1,3 +1,4 @@
+import hmac
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,7 +14,7 @@ from app.models.database import get_db, AsyncSessionLocal, User
 from typing import List
 
 from app.schemas.auth import (
-    ROLES, SignupRequest, SignupResponse, Token, UserCreate, UserLogin, UserResponse, UserUpdate,
+    ROLES, AdminSignupRequest, SignupRequest, SignupResponse, Token, UserCreate, UserLogin, UserResponse, UserUpdate,
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication & Users"])
@@ -78,7 +79,7 @@ async def ensure_admin_user() -> None:
             logger.warning("Admin password is the default 'admin' - set ADMIN_PASSWORD before exposing K8sPulse.")
 
 
-async def _authenticate(username: str, password: str, db: AsyncSession) -> Token:
+async def _authenticate(username: str, password: str, db: AsyncSession, portal: str = None) -> Token:
     # Users may sign in with their username or their email address
     identifier = username.strip()
     user = (await db.execute(
@@ -94,6 +95,13 @@ async def _authenticate(username: str, password: str, db: AsyncSession) -> Token
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="This account has been disabled. Contact your administrator.")
+    # Separate sign-in pages: each only admits its own kind of account
+    if portal == "admin" and user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="This is not an administrator account. Please use the user sign-in page.")
+    if portal == "user" and user.role == "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="This is an administrator account. Please use the administrator sign-in page.")
 
     token = create_access_token(
         subject=user.username,
@@ -111,7 +119,8 @@ async def _authenticate(username: str, password: str, db: AsyncSession) -> Token
 @router.post("/login", response_model=Token)
 async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
     """JSON login used by the dashboard."""
-    return await _authenticate(credentials.username, credentials.password, db)
+    portal = credentials.portal if credentials.portal in ("admin", "user") else None
+    return await _authenticate(credentials.username, credentials.password, db, portal)
 
 
 @router.post("/token", response_model=Token)
@@ -123,12 +132,52 @@ async def login_form(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSessi
 @router.get("/config")
 async def auth_config():
     """Tells the frontend whether it needs to show the login screen."""
-    return {"auth_enabled": settings.AUTH_ENABLED, "signup_mode": _signup_mode()}
+    return {
+        "auth_enabled": settings.AUTH_ENABLED,
+        "signup_mode": _signup_mode(),
+        "admin_signup_enabled": bool(settings.ADMIN_REGISTRATION_KEY),
+    }
 
 
 def _signup_mode() -> str:
     mode = settings.SIGNUP_MODE.lower()
     return mode if mode in ("approval", "open", "disabled") else "approval"
+
+
+async def _ensure_unique(db: AsyncSession, username: str, email: str) -> None:
+    if (await db.execute(select(User).where(User.username == username))).scalars().first():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="That username is already taken")
+    if (await db.execute(select(User).where(func.lower(User.email) == email.lower()))).scalars().first():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with that email already exists")
+
+
+@router.post("/admin/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
+async def admin_signup(data: AdminSignupRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Administrator registration. Requires ADMIN_REGISTRATION_KEY, so only someone with access to the
+    server configuration can create administrators. The account is active immediately.
+    """
+    expected = settings.ADMIN_REGISTRATION_KEY
+    if not expected or not settings.AUTH_ENABLED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Administrator registration is disabled on this server.")
+    if not hmac.compare_digest(data.registration_key.strip().encode(), expected.encode()):
+        logger.warning(f"Rejected administrator registration for '{data.username}': wrong registration key")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The administrator registration key is incorrect.")
+    await _ensure_unique(db, data.username, data.email)
+
+    db.add(User(
+        username=data.username,
+        email=data.email.lower(),
+        full_name=data.full_name,
+        hashed_password=get_password_hash(data.password),
+        role="admin",
+        is_active=True,
+        is_approved=True,
+    ))
+    await db.commit()
+    logger.info(f"New administrator registered: '{data.username}'")
+    return SignupResponse(status="active", message="Administrator account created. You can sign in now.")
 
 
 @router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
@@ -138,10 +187,7 @@ async def signup(data: SignupRequest, db: AsyncSession = Depends(get_db)):
     if mode == "disabled" or not settings.AUTH_ENABLED:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Sign-up is disabled. Ask an administrator to create an account for you.")
-    if (await db.execute(select(User).where(User.username == data.username))).scalars().first():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="That username is already taken")
-    if (await db.execute(select(User).where(func.lower(User.email) == data.email.lower()))).scalars().first():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with that email already exists")
+    await _ensure_unique(db, data.username, data.email)
 
     approved = mode == "open"
     role = settings.SIGNUP_DEFAULT_ROLE if settings.SIGNUP_DEFAULT_ROLE in ROLES else "viewer"

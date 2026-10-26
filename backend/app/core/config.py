@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     SIGNUP_MODE: str = "approval"
     # Role given to self-registered users; viewers can see everything but not change alert rules or users
     SIGNUP_DEFAULT_ROLE: str = "viewer"
+    # Secret needed to register an administrator at /admin/register. Empty = admin registration disabled.
+    ADMIN_REGISTRATION_KEY: str = ""
 
     # Kubernetes
     KUBECONFIG_PATH: str = ""

@@ -72,6 +72,13 @@ class SignupResponse(BaseModel):
 class UserLogin(BaseModel):
     username: str
     password: str
+    # Which sign-in page was used: "admin" accepts only admins, "user" only non-admins, None accepts both (API use)
+    portal: Optional[str] = None
+
+
+class AdminSignupRequest(SignupRequest):
+    """Administrator registration: the same fields plus the registration key from the server config."""
+    registration_key: str
 
 
 class UserResponse(UserBase):

@@ -81,7 +81,9 @@ export interface AuthUser {
 
 export type SignupMode = 'approval' | 'open' | 'disabled';
 
-export async function fetchAuthConfig(): Promise<{ auth_enabled: boolean; signup_mode?: SignupMode }> {
+export type Portal = 'user' | 'admin';
+
+export async function fetchAuthConfig(): Promise<{ auth_enabled: boolean; signup_mode?: SignupMode; admin_signup_enabled?: boolean }> {
   return handleResponse(await fetch(`${API_BASE}/auth/config`));
 }
 
@@ -93,8 +95,11 @@ export interface SignupForm {
 }
 
 /** Self-service registration; status is "active" (can sign in now) or "pending" (needs admin approval). */
-export async function signup(form: SignupForm): Promise<{ status: 'active' | 'pending'; message: string }> {
-  const res = await fetch(`${API_BASE}/auth/signup`, {
+export async function signup(
+  form: SignupForm & { registration_key?: string },
+  portal: Portal = 'user',
+): Promise<{ status: 'active' | 'pending'; message: string }> {
+  const res = await fetch(`${API_BASE}/auth/${portal === 'admin' ? 'admin/signup' : 'signup'}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(form),
@@ -125,14 +130,20 @@ export async function updateUser(
   }));
 }
 
-export async function login(username: string, password: string): Promise<AuthUser> {
+export async function login(username: string, password: string, portal?: Portal): Promise<AuthUser> {
   const data = await handleResponse<{ access_token: string; user: AuthUser }>(
     await authFetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, portal }),
     }),
   );
+  try {
+    // Remember which sign-in page was used, so logout returns there
+    if (portal) localStorage.setItem('k8spulse.portal', portal);
+  } catch {
+    // storage unavailable
+  }
   setToken(data.access_token);
   return data.user;
 }
