@@ -260,6 +260,17 @@ class KubernetesClientService:
                 return "ContainerCreating"
         return phase
 
+    @staticmethod
+    def _controller(pod) -> Optional[str]:
+        """Owning workload; Deployment pods are owned by a ReplicaSet named <deployment>-<hash>."""
+        owners = pod.metadata.owner_references or []
+        owner = next((o for o in owners if o.controller), owners[0] if owners else None)
+        if owner is None:
+            return None
+        if owner.kind == "ReplicaSet" and "-" in owner.name:
+            return f"Deployment/{owner.name.rsplit('-', 1)[0]}"
+        return f"{owner.kind}/{owner.name}"
+
     def _is_pod_unhealthy(self, pod) -> bool:
         if pod.status.phase in ("Failed", "Unknown"):
             return True
@@ -461,6 +472,7 @@ class KubernetesClientService:
                         created_at=str(p.metadata.creation_timestamp),
                         labels=dict(p.metadata.labels or {}),
                         containers=container_statuses,
+                        controller=self._controller(p),
                     ))
                 return res
             except Exception as exc:

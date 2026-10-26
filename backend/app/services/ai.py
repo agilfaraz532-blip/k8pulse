@@ -262,6 +262,7 @@ Analyze pod '{req.pod_name}' in namespace '{req.namespace}' using ONLY the live 
 Do not invent errors that are not in the logs/events. If the pod looks healthy, say so plainly.
 
 Pod status: {pod.status}, ready {pod.ready}, restarts {pod.restarts}, node {pod.node_name}, age {pod.age}
+Managed by: {pod.controller or "nothing (bare pod)"}
 Containers:
 {containers}
 
@@ -273,6 +274,9 @@ Events for this pod:
 
 Answer in concise markdown (under 250 words) with sections: Root Cause, Impact, Remediation, Commands.
 Put each kubectl command in backticks.
+Remediation must change the managing workload ({pod.controller or "the pod spec"}), because pods are
+recreated from it: for example `kubectl set env`, `kubectl set resources` or `kubectl edit` on it, then
+`kubectl rollout status`. Never suggest `kubectl exec` into a crashing container or editing the pod itself.
 """
 
         unhealthy = pod.status not in ("Running", "Succeeded") or any(c.reason for c in pod.containers if not c.ready)

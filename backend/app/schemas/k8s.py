@@ -49,6 +49,8 @@ class PodInfo(BaseModel):
     created_at: str
     labels: Dict[str, str] = Field(default_factory=dict)
     containers: List[ContainerStatusInfo] = Field(default_factory=list)
+    # Workload that owns the pod, e.g. "Deployment/payment-service" (fixes belong there, not on the pod)
+    controller: Optional[str] = None
 
 
 class DeploymentInfo(BaseModel):

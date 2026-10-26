@@ -86,6 +86,7 @@ export interface PodInfo {
   created_at: string;
   labels: Record<string, string>;
   containers: ContainerStatusInfo[];
+  controller?: string;
 }
 
 export interface DeploymentInfo {

@@ -180,6 +180,11 @@ export function PodsTab({ pods, namespaces, onOpenLogs, onAnalyzeAI, initialSear
                   <p className="text-xs text-slate-400 font-mono">
                     Namespace: <span className="text-cyan-300">{selectedPod.namespace}</span> • Node:{' '}
                     <span className="text-blue-300">{selectedPod.node_name}</span>
+                    {selectedPod.controller && (
+                      <>
+                        {' '}• Managed by: <span className="text-purple-300">{selectedPod.controller}</span>
+                      </>
+                    )}
                   </p>
                 </div>
               </div>

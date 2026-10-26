@@ -8,6 +8,8 @@ without your cluster data ever leaving your network.
 ![ai](https://img.shields.io/badge/AI-Ollama%20(local)%20%7C%20Gemini%20fallback-8b5cf6)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
+![K8sPulse cluster overview with live CPU, memory and network history](docs/screenshots/overview.png)
+
 ## Why K8sPulse
 
 Kubernetes is hard to see into. When a pod crash-loops at 2 a.m., the answer is scattered across
@@ -32,6 +34,22 @@ it on one screen and asks an LLM to connect the dots.
 - **Grafana**: Prometheus data source and a cluster dashboard, provisioned automatically.
 - **Secure by default**: JWT login, hashed passwords, admin-only user creation and a read-only Kubernetes RBAC role.
 - **Works everywhere**: responsive layout for desktop, tablet and phone.
+
+## Screenshots
+
+All screenshots are from a live Docker Desktop cluster running the [demo workload](#try-it-with-a-realistic-demo-app). Nothing is mocked.
+
+**AI copilot diagnosing a crash-looping pod**: it reads the crashed run's logs, finds the missing setting and suggests a fix on the Deployment.
+
+![AI SRE copilot incident analysis](docs/screenshots/ai-diagnosis.png)
+
+| Pods with kubectl-accurate status | Alerts opened by the rule engine |
+|---|---|
+| ![Pods inventory](docs/screenshots/pods.png) | ![Alert Center](docs/screenshots/alerts.png) |
+| **Ctrl/⌘+K search across the cluster** | **Live log viewer with severity highlighting** |
+| ![Global search](docs/screenshots/search.png) | ![Log viewer](docs/screenshots/logs.png) |
+| **Sign-in** | **Phone layout** |
+| ![Login page](docs/screenshots/login.png) | <img src="docs/screenshots/mobile.png" alt="Mobile layout" width="260"> |
 
 ## Architecture
 
