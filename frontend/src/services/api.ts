@@ -59,7 +59,9 @@ async function handleResponse<T>(res: Response): Promise<T> {
       const data = await res.json();
       if (data.detail) errorDetail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
     } catch {}
-    throw new Error(`API Error [${res.status}]: ${errorDetail}`);
+    const error = new Error(errorDetail) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -71,11 +73,56 @@ export interface AuthUser {
   username: string;
   email: string;
   role: string;
+  full_name?: string | null;
   is_active: boolean;
+  is_approved?: boolean;
+  created_at?: string | null;
 }
 
-export async function fetchAuthConfig(): Promise<{ auth_enabled: boolean }> {
+export type SignupMode = 'approval' | 'open' | 'disabled';
+
+export async function fetchAuthConfig(): Promise<{ auth_enabled: boolean; signup_mode?: SignupMode }> {
   return handleResponse(await fetch(`${API_BASE}/auth/config`));
+}
+
+export interface SignupForm {
+  full_name: string;
+  username: string;
+  email: string;
+  password: string;
+}
+
+/** Self-service registration; status is "active" (can sign in now) or "pending" (needs admin approval). */
+export async function signup(form: SignupForm): Promise<{ status: 'active' | 'pending'; message: string }> {
+  const res = await fetch(`${API_BASE}/auth/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(form),
+  });
+  if (res.status === 422) {
+    // Pydantic validation errors: surface the first human-readable message
+    const data = await res.json().catch(() => null);
+    const first = Array.isArray(data?.detail) ? data.detail[0] : null;
+    const msg = first?.msg ? String(first.msg).replace(/^Value error, /, '') : 'Please check the form';
+    const field = first?.loc?.[first.loc.length - 1];
+    throw new Error(field === 'email' ? 'Enter a valid email address' : msg);
+  }
+  return handleResponse(res);
+}
+
+export async function fetchUsers(): Promise<AuthUser[]> {
+  return handleResponse<AuthUser[]>(await authFetch(`${API_BASE}/auth/users`));
+}
+
+export async function updateUser(
+  userId: number,
+  changes: Partial<Pick<AuthUser, 'role' | 'is_active' | 'is_approved'>>,
+): Promise<AuthUser> {
+  return handleResponse<AuthUser>(await authFetch(`${API_BASE}/auth/users/${userId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(changes),
+  }));
 }
 
 export async function login(username: string, password: string): Promise<AuthUser> {

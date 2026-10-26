@@ -33,7 +33,8 @@ it on one screen and asks an LLM to connect the dots.
 - **AI SRE copilot**: one-click diagnosis of pods that are failing right now, or questions about the whole cluster. Deterministic checks first verify the facts (9 common failure patterns: image pull, missing ConfigMap/Secret, OOM, probe port/path, unschedulable, missing executable, read-only filesystem, missing Service, missing env var), then the model explains them using the pod spec, container errors, current and crashed-run logs and events, streamed live. If no model is reachable you get an error, not invented text.
 - **Measured, not claimed**: on 11 real failure scenarios the copilot found the root cause in **11/11** and gave a specific fix in **10/11**, on a 3B model running locally on a CPU. See [docs/ai-evaluation.md](docs/ai-evaluation.md).
 - **Grafana**: Prometheus data source and a cluster dashboard, provisioned automatically.
-- **Secure by default**: JWT login, hashed passwords, admin-only user creation and a read-only Kubernetes RBAC role.
+- **Accounts and roles**: sign up from the login page (full name, username, email, password); new accounts wait for admin approval by default. Roles: **viewer** (read-only), **operator** (manages alerts), **admin** (manages users). Sign in with username or email.
+- **Secure by default**: JWT login, bcrypt-hashed passwords, approval before access, and a read-only Kubernetes RBAC role.
 - **Works everywhere**: responsive layout for desktop, tablet and phone.
 
 ## Screenshots
@@ -160,6 +161,8 @@ cd frontend && npm run build  # type-check + production build
 | `SECRET_KEY` | dev value | JWT signing key — **change it** |
 | `AUTH_ENABLED` | `true` | Require login for data APIs |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `admin` | Bootstrap admin, created on first start |
+| `SIGNUP_MODE` | `approval` | Self-service sign-up: `approval` (an admin approves new accounts in **Users & Access**), `open`, or `disabled` |
+| `SIGNUP_DEFAULT_ROLE` | `viewer` | Role for self-registered users (`viewer` is read-only, `operator` can manage alerts) |
 | `DATABASE_URL` | SQLite file | `postgresql+asyncpg://…` in Docker/Kubernetes |
 | `KUBECONFIG_PATH` | `~/.kube/config` | Kubeconfig to load (`K8S_IN_CLUSTER=true` inside a cluster) |
 | `K8S_API_HOST_OVERRIDE` | empty | Reach a `127.0.0.1` API server from a container (set by compose) |

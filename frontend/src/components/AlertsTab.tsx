@@ -17,9 +17,11 @@ interface AlertsTabProps {
   rules: AlertRule[];
   events: AlertEvent[];
   onRefresh: () => void;
+  /** Viewers can see alerts but not change rules or resolve incidents */
+  readOnly?: boolean;
 }
 
-export function AlertsTab({ rules, events, onRefresh }: AlertsTabProps) {
+export function AlertsTab({ rules, events, onRefresh, readOnly = false }: AlertsTabProps) {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRuleName, setNewRuleName] = useState('');
   const [newMetricType, setNewMetricType] = useState('cpu_percent');
@@ -97,12 +99,18 @@ export function AlertsTab({ rules, events, onRefresh }: AlertsTabProps) {
         >
           <Play className="w-4 h-4" /> {isEvaluating ? 'Evaluating…' : 'Evaluate now'}
         </button>
+        {readOnly ? (
+          <span className="px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 text-xs" title="Ask an admin for the operator role to manage alerts">
+            Read-only (viewer)
+          </span>
+        ) : (
         <button
           onClick={() => setShowCreateModal(true)}
           className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold flex items-center gap-2 transition-colors shadow-lg shadow-amber-600/20"
         >
           <Plus className="w-4 h-4" /> Create Alert Rule
         </button>
+        )}
         </div>
       </div>
 
@@ -135,12 +143,14 @@ export function AlertsTab({ rules, events, onRefresh }: AlertsTabProps) {
                   </div>
                   <p className="text-xs text-rose-200/90 leading-relaxed">{event.message}</p>
                 </div>
+                {!readOnly && (
                 <button
                   onClick={() => handleResolve(event.id)}
                   className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-medium transition-colors flex items-center gap-1.5 self-start sm:self-auto flex-shrink-0"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" /> Resolve Incident
                 </button>
+                )}
               </div>
             ))}
           </div>
@@ -190,14 +200,16 @@ export function AlertsTab({ rules, events, onRefresh }: AlertsTabProps) {
                   <td className="px-4 py-4 font-sans">
                     <button
                       onClick={() => run(() => updateAlertRule(rule.id, { is_enabled: !rule.is_enabled }))}
-                      className={`inline-flex items-center gap-1 ${rule.is_enabled ? 'text-emerald-400' : 'text-slate-500'}`}
-                      title="Click to toggle"
+                      disabled={readOnly}
+                      className={`inline-flex items-center gap-1 ${rule.is_enabled ? 'text-emerald-400' : 'text-slate-500'} disabled:cursor-default`}
+                      title={readOnly ? undefined : 'Click to toggle'}
                     >
                       <span className={`w-2 h-2 rounded-full ${rule.is_enabled ? 'bg-emerald-400' : 'bg-slate-600'}`} />
                       {rule.is_enabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </td>
                   <td className="px-4 py-4 text-right">
+                    {!readOnly && (
                     <button
                       onClick={() => {
                         if (window.confirm(`Delete alert rule "${rule.name}"?`)) run(() => deleteAlertRule(rule.id));
@@ -207,6 +219,7 @@ export function AlertsTab({ rules, events, onRefresh }: AlertsTabProps) {
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
+                    )}
                   </td>
                 </tr>
               ))}

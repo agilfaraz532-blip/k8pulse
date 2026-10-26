@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.models.database import get_db, AlertRule, AlertEvent
+from app.api.v1.auth import require_operator
+from app.models.database import get_db, AlertRule, AlertEvent, User
 from app.schemas.alerts import AlertRuleCreate, AlertRuleUpdate, AlertRuleResponse, AlertEventResponse
 from app.services.alerting import METRIC_TYPES, alert_engine
 
@@ -63,7 +64,7 @@ async def list_alert_rules(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/rules", response_model=AlertRuleResponse, status_code=status.HTTP_201_CREATED)
-async def create_alert_rule(rule_in: AlertRuleCreate, db: AsyncSession = Depends(get_db)):
+async def create_alert_rule(rule_in: AlertRuleCreate, db: AsyncSession = Depends(get_db), _: User = Depends(require_operator)):
     _validate_rule(rule_in.metric_type, rule_in.condition, rule_in.severity)
     rule = AlertRule(**rule_in.model_dump())
     db.add(rule)
@@ -73,7 +74,7 @@ async def create_alert_rule(rule_in: AlertRuleCreate, db: AsyncSession = Depends
 
 
 @router.patch("/rules/{rule_id}", response_model=AlertRuleResponse)
-async def update_alert_rule(rule_id: int, rule_in: AlertRuleUpdate, db: AsyncSession = Depends(get_db)):
+async def update_alert_rule(rule_id: int, rule_in: AlertRuleUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(require_operator)):
     rule = await _get_rule(rule_id, db)
     for field, value in rule_in.model_dump(exclude_unset=True).items():
         setattr(rule, field, value)
@@ -84,7 +85,7 @@ async def update_alert_rule(rule_id: int, rule_in: AlertRuleUpdate, db: AsyncSes
 
 
 @router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_alert_rule(rule_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_alert_rule(rule_id: int, db: AsyncSession = Depends(get_db), _: User = Depends(require_operator)):
     rule = await _get_rule(rule_id, db)
     await db.delete(rule)
     await db.commit()
@@ -104,7 +105,7 @@ async def list_alert_events(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/events/{event_id}/resolve", response_model=AlertEventResponse)
-async def resolve_alert_event(event_id: int, db: AsyncSession = Depends(get_db)):
+async def resolve_alert_event(event_id: int, db: AsyncSession = Depends(get_db), _: User = Depends(require_operator)):
     event = (await db.execute(select(AlertEvent).where(AlertEvent.id == event_id))).scalars().first()
     if not event:
         raise HTTPException(status_code=404, detail="Alert event not found")

@@ -3,14 +3,18 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 from jose import jwt, JWTError
 
 from app.core.config import settings
 from app.core.logging import logger
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.models.database import get_db, AsyncSessionLocal, User
-from app.schemas.auth import UserCreate, UserLogin, UserResponse, Token
+from typing import List
+
+from app.schemas.auth import (
+    ROLES, SignupRequest, SignupResponse, Token, UserCreate, UserLogin, UserResponse, UserUpdate,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication & Users"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_PREFIX}/auth/token", auto_error=False)
@@ -48,6 +52,13 @@ async def require_admin(user: User = Depends(require_user)) -> User:
     return user
 
 
+async def require_operator(user: User = Depends(require_user)) -> User:
+    """Changes to alert rules/events: operators and admins; viewers are read-only."""
+    if user.role not in ("admin", "operator"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your role (viewer) is read-only")
+    return user
+
+
 async def ensure_admin_user() -> None:
     """Create the bootstrap admin account from ADMIN_USERNAME / ADMIN_PASSWORD if it is missing."""
     async with AsyncSessionLocal() as db:
@@ -68,9 +79,21 @@ async def ensure_admin_user() -> None:
 
 
 async def _authenticate(username: str, password: str, db: AsyncSession) -> Token:
-    user = (await db.execute(select(User).where(User.username == username))).scalars().first()
-    if not user or not user.is_active or not verify_password(password, user.hashed_password):
+    # Users may sign in with their username or their email address
+    identifier = username.strip()
+    user = (await db.execute(
+        select(User).where((User.username == identifier.lower()) | (User.username == identifier)
+                           | (func.lower(User.email) == identifier.lower()))
+    )).scalars().first()
+    if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+    # Only explain the account state once the password is proven, so it cannot be probed
+    if not user.is_approved:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Your account is waiting for an administrator to approve it.")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="This account has been disabled. Contact your administrator.")
 
     token = create_access_token(
         subject=user.username,
@@ -100,7 +123,43 @@ async def login_form(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSessi
 @router.get("/config")
 async def auth_config():
     """Tells the frontend whether it needs to show the login screen."""
-    return {"auth_enabled": settings.AUTH_ENABLED}
+    return {"auth_enabled": settings.AUTH_ENABLED, "signup_mode": _signup_mode()}
+
+
+def _signup_mode() -> str:
+    mode = settings.SIGNUP_MODE.lower()
+    return mode if mode in ("approval", "open", "disabled") else "approval"
+
+
+@router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
+async def signup(data: SignupRequest, db: AsyncSession = Depends(get_db)):
+    """Self-service registration. Depending on SIGNUP_MODE the account is active at once or waits for approval."""
+    mode = _signup_mode()
+    if mode == "disabled" or not settings.AUTH_ENABLED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Sign-up is disabled. Ask an administrator to create an account for you.")
+    if (await db.execute(select(User).where(User.username == data.username))).scalars().first():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="That username is already taken")
+    if (await db.execute(select(User).where(func.lower(User.email) == data.email.lower()))).scalars().first():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with that email already exists")
+
+    approved = mode == "open"
+    role = settings.SIGNUP_DEFAULT_ROLE if settings.SIGNUP_DEFAULT_ROLE in ROLES else "viewer"
+    db.add(User(
+        username=data.username,
+        email=data.email.lower(),
+        full_name=data.full_name,
+        hashed_password=get_password_hash(data.password),
+        role="viewer" if role == "admin" else role,   # never hand out admin through sign-up
+        is_active=True,
+        is_approved=approved,
+    ))
+    await db.commit()
+    logger.info(f"New sign-up '{data.username}' ({'active' if approved else 'pending approval'})")
+    if approved:
+        return SignupResponse(status="active", message="Account created. You can sign in now.")
+    return SignupResponse(status="pending",
+                          message="Account created. An administrator needs to approve it before you can sign in.")
 
 
 @router.get("/me", response_model=UserResponse)
@@ -119,11 +178,49 @@ async def register_user(user_in: UserCreate, db: AsyncSession = Depends(get_db),
     user = User(
         username=user_in.username,
         email=user_in.email,
+        full_name=user_in.full_name,
         hashed_password=get_password_hash(user_in.password),
         role=user_in.role,
         is_active=True,
+        is_approved=True,
     )
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    return user
+
+
+@router.get("/users", response_model=List[UserResponse])
+async def list_users(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """All accounts, pending approvals first (admin only)."""
+    users = (await db.execute(select(User))).scalars().all()
+    return sorted(users, key=lambda u: (u.is_approved, u.username))
+
+
+@router.patch("/users/{user_id}", response_model=UserResponse)
+async def update_user(user_id: int, changes: UserUpdate, db: AsyncSession = Depends(get_db),
+                      admin: User = Depends(require_admin)):
+    """Approve, change role, or enable/disable an account (admin only)."""
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == admin.id and (changes.is_active is False or (changes.role and changes.role != "admin")):
+        raise HTTPException(status_code=400, detail="You cannot disable or demote your own account")
+
+    losing_admin = user.role == "admin" and (changes.is_active is False or (changes.role and changes.role != "admin"))
+    if losing_admin:
+        admins = (await db.execute(
+            select(func.count()).select_from(User).where(User.role == "admin", User.is_active.is_(True),
+                                                         User.is_approved.is_(True))
+        )).scalar_one()
+        if admins <= 1:
+            raise HTTPException(status_code=400, detail="At least one active admin must remain")
+
+    for field in ("role", "is_active", "is_approved"):
+        value = getattr(changes, field)
+        if value is not None:
+            setattr(user, field, value)
+    await db.commit()
+    await db.refresh(user)
+    logger.info(f"Admin '{admin.username}' updated user '{user.username}': {changes.model_dump(exclude_none=True)}")
     return user

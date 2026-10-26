@@ -17,6 +17,7 @@ import {
   X,
   Loader2,
   WifiOff,
+  Users,
 } from 'lucide-react';
 
 import {
@@ -58,7 +59,7 @@ import { LoginPage } from './components/LoginPage';
 import { CommandPalette, SearchTarget } from './components/CommandPalette';
 import { LogoMark, Wordmark } from './components/Logo';
 import { needsAttention } from './components/status';
-import { AuthUser, UNAUTHORIZED_EVENT, fetchAuthConfig, fetchCurrentUser, getToken, logout } from './services/api';
+import { AuthUser, UNAUTHORIZED_EVENT, fetchAuthConfig, fetchCurrentUser, fetchUsers, getToken, logout } from './services/api';
 
 // Each tab is its own chunk so the first screen loads less JavaScript
 const OverviewTab = lazy(() => import('./components/OverviewTab').then((m) => ({ default: m.OverviewTab })));
@@ -68,8 +69,9 @@ const DeploymentsTab = lazy(() => import('./components/DeploymentsTab').then((m)
 const LogsTab = lazy(() => import('./components/LogsTab').then((m) => ({ default: m.LogsTab })));
 const AlertsTab = lazy(() => import('./components/AlertsTab').then((m) => ({ default: m.AlertsTab })));
 const AITab = lazy(() => import('./components/AITab').then((m) => ({ default: m.AITab })));
+const UsersTab = lazy(() => import('./components/UsersTab').then((m) => ({ default: m.UsersTab })));
 
-type TabId = 'overview' | 'nodes' | 'pods' | 'deployments' | 'logs' | 'alerts' | 'ai';
+type TabId = 'overview' | 'nodes' | 'pods' | 'deployments' | 'logs' | 'alerts' | 'ai' | 'users';
 
 const REFRESH_MS = 10000;
 
@@ -127,6 +129,8 @@ function Dashboard({ user }: { user: AuthUser }) {
   const [searchTarget, setSearchTarget] = useState<SearchTarget | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const isAdmin = user.role === 'admin';
+  const [pendingUsers, setPendingUsers] = useState(0);
 
   const [healthData, setHealthData] = useState<HealthResponse | null>(null);
   const [k8sHealth, setK8sHealth] = useState<KubernetesHealth | null>(null);
@@ -219,6 +223,18 @@ function Dashboard({ user }: { user: AuthUser }) {
     };
   }, [loadAllData]);
 
+  // Admins see how many sign-ups are waiting for approval
+  useEffect(() => {
+    if (!isAdmin) return;
+    const check = () =>
+      fetchUsers()
+        .then((list) => setPendingUsers(list.filter((u) => u.is_approved === false).length))
+        .catch(() => undefined);
+    check();
+    const interval = setInterval(check, 30000);
+    return () => clearInterval(interval);
+  }, [isAdmin]);
+
   // Ctrl/⌘+K opens global search
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -262,6 +278,9 @@ function Dashboard({ user }: { user: AuthUser }) {
     { id: 'logs', label: 'Log Viewer', icon: FileText, count: null },
     { id: 'alerts', label: 'Alert Center', icon: AlertTriangle, count: openAlerts ? String(openAlerts) : null, tone: 'alert' },
     { id: 'ai', label: 'AI SRE Copilot', icon: Bot, count: 'AI', tone: 'ai' },
+    ...(isAdmin
+      ? [{ id: 'users' as TabId, label: 'Users & Access', icon: Users, count: pendingUsers ? String(pendingUsers) : null, tone: 'alert' as const }]
+      : []),
   ];
 
   const tabSearch = (tab: SearchTarget['tab']) => (searchTarget?.tab === tab ? searchTarget.term : undefined);
@@ -352,8 +371,9 @@ function Dashboard({ user }: { user: AuthUser }) {
           </div>
           {user.username !== 'local' && (
             <div className="flex justify-between items-center pt-1">
-              <span className="truncate">
-                Signed in: <span className="text-slate-300">{user.username}</span>
+              <span className="truncate" title={`${user.full_name || user.username} · ${user.role}`}>
+                <span className="text-slate-300">{user.full_name || user.username}</span>
+                <span className="ml-1.5 text-[10px] px-1 rounded bg-slate-800 text-slate-400 uppercase">{user.role}</span>
               </span>
               <button onClick={logout} className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
                 <LogOut className="w-3 h-3" /> Logout
@@ -469,7 +489,11 @@ function Dashboard({ user }: { user: AuthUser }) {
               <LogsTab pods={pods} initialNamespace={logTarget?.namespace} initialPod={logTarget?.podName} />
             )}
 
-            {activeTab === 'alerts' && <AlertsTab rules={alertRules} events={alertEvents} onRefresh={loadAllData} />}
+            {activeTab === 'alerts' && (
+              <AlertsTab rules={alertRules} events={alertEvents} onRefresh={loadAllData} readOnly={user.role === 'viewer'} />
+            )}
+
+            {activeTab === 'users' && isAdmin && <UsersTab currentUser={user} onPendingChange={setPendingUsers} />}
 
             {activeTab === 'ai' && (
               <AITab pods={pods} incidentTarget={incidentTarget} onIncidentHandled={() => setIncidentTarget(null)} />

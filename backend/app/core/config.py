@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "admin"
     ADMIN_EMAIL: str = "admin@k8spulse.local"
+    # Self-service sign-up: "approval" (new accounts wait for an admin), "open" (active at once) or "disabled"
+    SIGNUP_MODE: str = "approval"
+    # Role given to self-registered users; viewers can see everything but not change alert rules or users
+    SIGNUP_DEFAULT_ROLE: str = "viewer"
 
     # Kubernetes
     KUBECONFIG_PATH: str = ""

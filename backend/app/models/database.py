@@ -41,7 +41,10 @@ class User(Base):
     email = Column(String(100), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     role = Column(String(20), default="operator", nullable=False)  # admin, operator, viewer
+    full_name = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Self-registered accounts wait for an admin when SIGNUP_MODE=approval
+    is_approved = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 
