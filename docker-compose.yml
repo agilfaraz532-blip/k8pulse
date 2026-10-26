@@ -131,6 +131,22 @@ services:
     networks:
       - k8spulse-net
 
+  # 7. Optional public tunnel to the backend, for a dashboard hosted elsewhere (e.g. Vercel).
+  #    Starts only with:  docker compose --profile tunnel up -d
+  #    Needs NGROK_AUTHTOKEN and NGROK_DOMAIN (your free static domain) in the root .env file.
+  tunnel:
+    image: ngrok/ngrok:latest
+    container_name: k8spulse-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: ["http", "--url=${NGROK_DOMAIN:-missing-ngrok-domain}", "backend:8000"]
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    depends_on:
+      - backend
+    networks:
+      - k8spulse-net
+
 networks:
   k8spulse-net:
     driver: bridge

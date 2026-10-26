@@ -20,6 +20,8 @@ os.environ["SIGNUP_DEFAULT_ROLE"] = "viewer"
 os.environ["ADMIN_REGISTRATION_KEY"] = ""
 os.environ["ADMIN_USERNAME"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "admin"
+# Many tests sign in repeatedly; rate limiting has its own test
+os.environ["AUTH_RATE_LIMIT"] = "0"
 os.environ["PROMETHEUS_URL"] = "http://127.0.0.1:9"
 os.environ["PROMETHEUS_TIMEOUT"] = "1"
 os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"

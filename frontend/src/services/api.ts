@@ -17,7 +17,25 @@ import {
   AIAnalysisResponse,
 } from '../types';
 
-const API_BASE = '/api';
+/**
+ * Where the backend lives. Empty (default) = same origin, proxied by nginx or the Vite dev server.
+ * For a split deployment (e.g. dashboard on Vercel, backend behind a tunnel) set VITE_API_URL at build
+ * time, e.g. VITE_API_URL=https://k8pulse.ngrok.app
+ */
+export const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+const API_BASE = `${API_ORIGIN}/api`;
+
+/** Headers sent on every API call. ngrok's free tier shows a browser warning page unless this is set. */
+function baseHeaders(init?: HeadersInit): Headers {
+  const headers = new Headers(init);
+  if (API_ORIGIN) headers.set('ngrok-skip-browser-warning', 'true');
+  return headers;
+}
+
+/** fetch() against the API with the shared headers (used where no auth token is involved). */
+function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(input, { ...init, headers: baseHeaders(init.headers) });
+}
 const TOKEN_KEY = 'k8spulse.token';
 
 /** Fired when the backend rejects the stored token; App listens and shows the login screen. */
@@ -42,7 +60,7 @@ export function setToken(token: string | null): void {
 
 async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
   const token = getToken();
-  const headers = new Headers(init.headers);
+  const headers = baseHeaders(init.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
   const res = await fetch(input, { ...init, headers });
   if (res.status === 401 && !input.includes('/auth/login')) {
@@ -84,7 +102,7 @@ export type SignupMode = 'approval' | 'open' | 'disabled';
 export type Portal = 'user' | 'admin';
 
 export async function fetchAuthConfig(): Promise<{ auth_enabled: boolean; signup_mode?: SignupMode; admin_signup_enabled?: boolean }> {
-  return handleResponse(await fetch(`${API_BASE}/auth/config`));
+  return handleResponse(await apiFetch(`${API_BASE}/auth/config`));
 }
 
 export interface SignupForm {
@@ -99,7 +117,7 @@ export async function signup(
   form: SignupForm & { registration_key?: string },
   portal: Portal = 'user',
 ): Promise<{ status: 'active' | 'pending'; message: string }> {
-  const res = await fetch(`${API_BASE}/auth/${portal === 'admin' ? 'admin/signup' : 'signup'}`, {
+  const res = await apiFetch(`${API_BASE}/auth/${portal === 'admin' ? 'admin/signup' : 'signup'}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(form),

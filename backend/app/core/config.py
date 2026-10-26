@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     SIGNUP_MODE: str = "approval"
     # Role given to self-registered users; viewers can see everything but not change alert rules or users
     SIGNUP_DEFAULT_ROLE: str = "viewer"
+    # Failed-or-not attempts allowed per client IP on sign-in / sign-up endpoints, per window (0 disables)
+    AUTH_RATE_LIMIT: int = 10
+    AUTH_RATE_WINDOW_SECONDS: int = 300
+    # Extra allowed browser origins as a regex, e.g. https://k8pulse(-.*)?\.vercel\.app for Vercel deployments
+    CORS_ORIGIN_REGEX: str = ""
+    # Serve /metrics to requests that came through a proxy/tunnel (X-Forwarded-For). Off: only direct scrapes.
+    METRICS_PUBLIC: bool = False
     # Secret needed to register an administrator at /admin/register. Empty = admin registration disabled.
     ADMIN_REGISTRATION_KEY: str = ""
 

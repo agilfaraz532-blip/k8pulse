@@ -96,3 +96,51 @@ cd frontend && npm install && npm run dev
 
 SQLite (`backend/k8spulse_dev.db`) is used by default. Prometheus charts stay empty unless `PROMETHEUS_URL`
 points at a Prometheus that scrapes this backend.
+
+## 4. Public dashboard on Vercel, backend on your machine
+
+Host the dashboard on Vercel (free, public URL) while the backend keeps running next to your cluster.
+The browser talks to the backend through an [ngrok](https://ngrok.com) tunnel with a free static domain.
+
+```
+Browser ──► Vercel (React dashboard) ──HTTPS──► ngrok static domain ──► tunnel container ──► backend:8000
+                                                                                   └─► your cluster, Ollama, Postgres
+```
+
+The site works whenever your machine and Docker Desktop are running.
+
+**Before exposing anything:** change the admin password and keep sign-up on approval.
+
+```bash
+docker compose exec backend python -m app.cli set-password admin
+```
+
+### 1. Tunnel
+1. Create a free account at https://dashboard.ngrok.com, copy your **authtoken**, and claim your free **static domain**
+   (Domains page, e.g. `your-name.ngrok-free.app`).
+2. In the repository root create `.env` (gitignored):
+   ```env
+   NGROK_AUTHTOKEN=<your authtoken>
+   NGROK_DOMAIN=your-name.ngrok-free.app
+   ```
+3. Allow the dashboard's origin in `backend/.env`:
+   ```env
+   CORS_ORIGIN_REGEX=https://k8pulse(-[a-z0-9-]+)?\.vercel\.app
+   ```
+4. Start everything with the tunnel:
+   ```bash
+   docker compose --profile tunnel up -d
+   curl https://your-name.ngrok-free.app/api/health      # should report "healthy"
+   ```
+
+### 2. Vercel
+1. Import the GitHub repository in Vercel (**Add New → Project**) and set **Root Directory** to `frontend`.
+   `frontend/vercel.json` already sets the build and the routes for `/login`, `/admin/login`, etc.
+2. Add the environment variable `VITE_API_URL=https://your-name.ngrok-free.app` and deploy.
+
+Pushes to `main` redeploy automatically. If the tunnel domain changes, update `VITE_API_URL` and redeploy.
+
+### What is exposed
+Only the backend API goes through the tunnel. Data endpoints require sign-in; sign-in and registration are
+rate limited per IP (`AUTH_RATE_LIMIT`, default 10 attempts per 5 minutes); `/metrics` is hidden from tunnelled
+requests unless `METRICS_PUBLIC=true`. Prometheus, Grafana, Postgres and the cluster API stay private.

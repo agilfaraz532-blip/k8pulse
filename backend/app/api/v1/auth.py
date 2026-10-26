@@ -9,6 +9,7 @@ from jose import jwt, JWTError
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.ratelimit import limit_auth_attempts
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.models.database import get_db, AsyncSessionLocal, User
 from typing import List
@@ -116,14 +117,14 @@ async def _authenticate(username: str, password: str, db: AsyncSession, portal: 
     )
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token, dependencies=[Depends(limit_auth_attempts)])
 async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
     """JSON login used by the dashboard."""
     portal = credentials.portal if credentials.portal in ("admin", "user") else None
     return await _authenticate(credentials.username, credentials.password, db, portal)
 
 
-@router.post("/token", response_model=Token)
+@router.post("/token", response_model=Token, dependencies=[Depends(limit_auth_attempts)])
 async def login_form(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
     """OAuth2 password flow (used by the Swagger UI 'Authorize' button)."""
     return await _authenticate(form.username, form.password, db)
@@ -151,7 +152,8 @@ async def _ensure_unique(db: AsyncSession, username: str, email: str) -> None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with that email already exists")
 
 
-@router.post("/admin/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/admin/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(limit_auth_attempts)])
 async def admin_signup(data: AdminSignupRequest, db: AsyncSession = Depends(get_db)):
     """
     Administrator registration. Requires ADMIN_REGISTRATION_KEY, so only someone with access to the
@@ -180,7 +182,8 @@ async def admin_signup(data: AdminSignupRequest, db: AsyncSession = Depends(get_
     return SignupResponse(status="active", message="Administrator account created. You can sign in now.")
 
 
-@router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(limit_auth_attempts)])
 async def signup(data: SignupRequest, db: AsyncSession = Depends(get_db)):
     """Self-service registration. Depending on SIGNUP_MODE the account is active at once or waits for approval."""
     mode = _signup_mode()

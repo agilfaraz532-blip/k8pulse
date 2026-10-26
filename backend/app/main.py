@@ -55,6 +55,8 @@ origins = settings.CORS_ORIGINS if isinstance(settings.CORS_ORIGINS, list) else 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    # e.g. a dashboard hosted on Vercel (production and preview URLs)
+    allow_origin_regex=settings.CORS_ORIGIN_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -103,8 +105,12 @@ app.include_router(health_router)
 
 
 @app.get("/metrics", include_in_schema=False)
-async def prometheus_metrics():
+async def prometheus_metrics(request: Request):
     """Prometheus scrape endpoint with live Kubernetes gauges (see app/monitoring/exporter.py)."""
+    # Prometheus scrapes directly. Requests that came through a tunnel or reverse proxy carry
+    # X-Forwarded-For; don't publish cluster details to the internet unless explicitly allowed.
+    if request.headers.get("x-forwarded-for") and not settings.METRICS_PUBLIC:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
     payload = await asyncio.to_thread(generate_latest, metrics_registry)
     return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
 

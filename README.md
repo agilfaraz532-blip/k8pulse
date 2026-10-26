@@ -118,6 +118,11 @@ kubectl delete namespace demo            # remove everything
 
 Within a minute or two the incidents appear in **Pods**, **Alert Center** and **AI SRE Copilot**.
 
+## Put the dashboard online (Vercel)
+
+Host the dashboard on Vercel and keep the backend next to your cluster, connected through an ngrok tunnel:
+`docker compose --profile tunnel up -d`. Step-by-step guide: [docs/deployment.md](docs/deployment.md#4-public-dashboard-on-vercel-backend-on-your-machine).
+
 ## Deploy to Kubernetes
 
 Images are published to GHCR by CI on every push to `main`.
@@ -167,6 +172,9 @@ cd frontend && npm run build  # type-check + production build
 | `DATABASE_URL` | SQLite file | `postgresql+asyncpg://…` in Docker/Kubernetes |
 | `KUBECONFIG_PATH` | `~/.kube/config` | Kubeconfig to load (`K8S_IN_CLUSTER=true` inside a cluster) |
 | `K8S_API_HOST_OVERRIDE` | empty | Reach a `127.0.0.1` API server from a container (set by compose) |
+| `CORS_ORIGIN_REGEX` | empty | Extra browser origins allowed, e.g. a Vercel-hosted dashboard |
+| `AUTH_RATE_LIMIT` / `AUTH_RATE_WINDOW_SECONDS` | `10` / `300` | Sign-in and registration attempts allowed per IP per window |
+| `METRICS_PUBLIC` | `false` | Serve `/metrics` to requests that came through a tunnel or proxy |
 | `DEMO_DATA` | `false` | Serve built-in sample data when no cluster is reachable (tests / offline UI work only) |
 | `PROMETHEUS_URL` | `http://localhost:9090` | Prometheus for metric history |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | `http://localhost:11434` / `llama3.2:latest` | Local LLM |

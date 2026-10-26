@@ -1,3 +1,4 @@
+import { API_ORIGIN } from '../services/api';
 import {
   AreaChart,
   Area,
@@ -323,7 +324,7 @@ export function OverviewTab({
             <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
               <span>UPTIME: {health?.uptime_seconds ?? 0}s</span>
               <a
-                href="/docs"
+                href={`${API_ORIGIN}/docs`}
                 target="_blank"
                 rel="noreferrer"
                 className="text-cyan-400 hover:underline flex items-center gap-1"

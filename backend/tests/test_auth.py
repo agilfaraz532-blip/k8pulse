@@ -163,3 +163,38 @@ async def test_each_sign_in_page_admits_only_its_accounts(auth_enabled, monkeypa
         # Wrong password on either page still says only "invalid"
         bad = await ac.post("/api/auth/login", json={"username": "meera", "password": "wrong1234", "portal": "admin"})
         assert bad.status_code == 401
+
+
+def test_auth_rate_limit_blocks_guessing():
+    from fastapi import HTTPException
+    from app.core.ratelimit import RateLimiter
+
+    limiter = RateLimiter(limit=3, window_seconds=60)
+    for _ in range(3):
+        limiter.check("203.0.113.9:/api/auth/login")
+    try:
+        limiter.check("203.0.113.9:/api/auth/login")
+        raise AssertionError("4th attempt should be blocked")
+    except HTTPException as exc:
+        assert exc.status_code == 429 and "Retry-After" in exc.headers
+    # Another client is unaffected
+    limiter.check("198.51.100.7:/api/auth/login")
+
+
+def test_set_password_cli(tmp_path):
+    import asyncio
+    from app.cli import set_password
+    from app.core.security import verify_password
+    from app.models.database import AsyncSessionLocal, User
+    from sqlalchemy import select
+
+    assert asyncio.run(set_password("admin", "N3w-strong-pass")) == 0
+
+    async def check():
+        async with AsyncSessionLocal() as db:
+            user = (await db.execute(select(User).where(User.username == "admin"))).scalars().first()
+            return verify_password("N3w-strong-pass", user.hashed_password)
+
+    assert asyncio.run(check())
+    asyncio.run(set_password("admin", "admin"))   # restore for other tests
+    assert asyncio.run(set_password("nobody", "whatever1")) == 1
